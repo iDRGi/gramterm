@@ -276,10 +276,17 @@ fn draw_login(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
         );
     }
 
+    let button = if app.login_busy {
+        Some(i18n::t(app.lang, "please_wait"))
+    } else {
+        button
+    };
     if let Some(label) = button {
         let area = chunks[8];
         app.hits.push((area, Hit::Login(LoginHit::Submit)));
-        let style = if app.login_focus == LoginFocus::Submit {
+        let style = if app.login_busy {
+            Style::default().fg(theme.dim).bg(theme.selected)
+        } else if app.login_focus == LoginFocus::Submit {
             Style::default()
                 .fg(theme.bg)
                 .bg(theme.accent)
@@ -367,8 +374,20 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         ),
         Span::raw(" "),
         Span::styled(
-            if app.demo { " DEMO " } else { " NO TDLIB " },
-            Style::default().fg(theme.bg).bg(theme.mention),
+            if app.demo {
+                " DEMO "
+            } else if app.is_ready() {
+                " TDLIB "
+            } else {
+                " NO TDLIB "
+            },
+            Style::default().fg(theme.bg).bg(if app.demo {
+                theme.warning
+            } else if app.is_ready() {
+                theme.success
+            } else {
+                theme.mention
+            }),
         ),
         Span::raw(" "),
         Span::styled(
@@ -406,12 +425,13 @@ fn draw_chat_list(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
     let chats = app.backend.chats().to_vec();
     let visible = app.visible_chat_indices();
     if visible.is_empty() {
+        let label = if app.backend.chats_loading() {
+            i18n::t(app.lang, "loading_chats")
+        } else {
+            i18n::t(app.lang, "no_chats")
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                i18n::t(app.lang, "no_chats"),
-                Style::default().fg(theme.dim),
-            ))
-            .style(base(theme)),
+            Paragraph::new(Span::styled(label, Style::default().fg(theme.dim))).style(base(theme)),
             inner,
         );
         return;

@@ -58,6 +58,9 @@ pub trait Backend {
     fn take_notice(&mut self) -> Option<String> {
         None
     }
+    fn chats_loading(&self) -> bool {
+        false
+    }
     fn can_send(&self) -> bool {
         true
     }

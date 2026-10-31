@@ -100,6 +100,7 @@ pub struct App {
     pub login_focus: LoginFocus,
     pub login_error: Option<String>,
     pub login_show_password: bool,
+    pub login_busy: bool,
     pub command: String,
     pub search: String,
     pub popup: Popup,
@@ -148,6 +149,7 @@ impl App {
             login_focus: LoginFocus::Phone,
             login_error: None,
             login_show_password: false,
+            login_busy: false,
             command: String::new(),
             search: String::new(),
             popup: Popup::None,
@@ -307,6 +309,7 @@ impl App {
         let auth_after = self.backend.auth();
         if auth_before != auth_after {
             self.dirty = true;
+            self.login_busy = false;
             match &auth_after {
                 AuthView::WaitPhoneNumber => self.login_focus = LoginFocus::Phone,
                 AuthView::WaitCode => {
@@ -327,6 +330,7 @@ impl App {
             }
         }
         if let Some(notice) = self.backend.take_notice() {
+            self.login_busy = false;
             if self.is_ready() {
                 self.status = notice;
             } else {
@@ -625,6 +629,9 @@ impl App {
     }
 
     fn submit_login(&mut self) {
+        if self.login_busy {
+            return;
+        }
         self.login_error = None;
         match self.backend.auth() {
             AuthView::WaitPhoneNumber => {
@@ -634,6 +641,7 @@ impl App {
                     self.dirty = true;
                     return;
                 }
+                self.login_busy = true;
                 self.backend.submit_phone(phone);
                 self.login_focus = LoginFocus::Code;
                 self.login_code.clear();
@@ -646,6 +654,7 @@ impl App {
                     self.dirty = true;
                     return;
                 }
+                self.login_busy = true;
                 self.backend.submit_code(code);
                 self.status = i18n::t(self.lang, "code_submitted").to_string();
             }
@@ -656,6 +665,7 @@ impl App {
                     self.dirty = true;
                     return;
                 }
+                self.login_busy = true;
                 self.backend.submit_password(password);
                 self.status = i18n::t(self.lang, "password_submitted").to_string();
             }

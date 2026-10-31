@@ -15,6 +15,8 @@ enum Command {
 enum Event {
     Auth(AuthView),
     Chats(Vec<ChatInfo>),
+    ChatsLoading,
+    ChatsFailed,
     Notice(String),
     Error(String),
 }
@@ -24,6 +26,7 @@ pub struct TgBackend {
     rx: Receiver<Event>,
     auth: AuthView,
     chats: Vec<Chat>,
+    chats_loading: bool,
     notice: Option<String>,
 }
 
@@ -43,6 +46,7 @@ impl TgBackend {
             rx,
             auth: AuthView::Error(error),
             chats: Vec::new(),
+            chats_loading: false,
             notice: None,
         }
     }
@@ -87,26 +91,29 @@ impl TgBackend {
                 loop {
                     loop {
                         match cmd_rx.try_recv() {
-                            Ok(Command::Phone(phone)) => {
+                            Ok(Command::Phone(phone)) if state == AuthState::WaitPhoneNumber => {
                                 if let Err(error) = client.submit_phone(&phone).await {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
-                            Ok(Command::Code(code)) => {
+                            Ok(Command::Code(code)) if state == AuthState::WaitCode => {
                                 if let Err(error) = client.submit_code(&code).await {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
-                            Ok(Command::Password(password)) => {
+                            Ok(Command::Password(password))
+                                if matches!(state, AuthState::WaitPassword { .. }) =>
+                            {
                                 if let Err(error) = client.submit_password(&password).await {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
-                            Ok(Command::Qr) => {
+                            Ok(Command::Qr) if state == AuthState::WaitPhoneNumber => {
                                 if let Err(error) = client.request_qr().await {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
+                            Ok(_) => {}
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => return,
                         }
@@ -139,18 +146,24 @@ impl TgBackend {
             rx: event_rx,
             auth: AuthView::Starting,
             chats: Vec::new(),
+            chats_loading: false,
             notice: None,
         }
     }
 }
 
 async fn publish_ready(client: &TgClient, events: &Sender<Event>) {
+    let _ = events.send(Event::ChatsLoading);
+    tracing::info!("loading chat list");
     match client.chats(30).await {
         Ok(chats) => {
+            tracing::info!("chat list loaded: {} chats", chats.len());
             let _ = events.send(Event::Chats(chats));
         }
         Err(error) => {
+            tracing::error!("chat list failed: {error:#}");
             let _ = events.send(Event::Notice(format!("{error:#}")));
+            let _ = events.send(Event::ChatsFailed);
         }
     }
 }
@@ -192,6 +205,10 @@ impl Backend for TgBackend {
         self.notice.take()
     }
 
+    fn chats_loading(&self) -> bool {
+        self.chats_loading
+    }
+
     fn can_send(&self) -> bool {
         false
     }
@@ -226,6 +243,7 @@ impl Backend for TgBackend {
                     self.auth = auth;
                 }
                 Event::Chats(chats) => {
+                    self.chats_loading = false;
                     self.chats = chats
                         .into_iter()
                         .map(|chat| Chat {
@@ -238,6 +256,12 @@ impl Backend for TgBackend {
                             kind: ChatKind::Private,
                         })
                         .collect();
+                }
+                Event::ChatsLoading => {
+                    self.chats_loading = true;
+                }
+                Event::ChatsFailed => {
+                    self.chats_loading = false;
                 }
                 Event::Notice(notice) => {
                     self.notice = Some(notice);

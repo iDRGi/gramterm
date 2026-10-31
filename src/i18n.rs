@@ -182,6 +182,10 @@ pub fn t(lang: Lang, key: &'static str) -> &'static str {
         (Lang::En, "sign_in") => "Sign in",
         (Lang::Ru, "use_qr") => "Войти по QR",
         (Lang::En, "use_qr") => "Use QR code",
+        (Lang::Ru, "please_wait") => "Подождите…",
+        (Lang::En, "please_wait") => "Please wait…",
+        (Lang::Ru, "loading_chats") => "Загружаем чаты…",
+        (Lang::En, "loading_chats") => "Loading chats…",
         (Lang::Ru, "help_body") => {
             "↑/↓ или j/k — двигаться\n\
              Tab / Shift+Tab — менять фокус\n\

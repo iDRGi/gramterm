@@ -200,21 +200,39 @@ impl TgClient {
     /// Loads and resolves the first `limit` chats. TDLib returns ids from
     /// `getChats`; titles require a `getChat` per id.
     pub async fn chats(&self, limit: i32) -> Result<Vec<ChatInfo>> {
-        // 404 means there are no more chats; the ids already loaded are fine.
-        let _ = td(functions::load_chats(None, limit, self.client_id).await);
-        let chats = td(functions::get_chats(None, limit, self.client_id).await)?;
+        let client_id = self.client_id;
+        // TDLib starts loading the main chat list automatically after login.
+        // `loadChats` here used to trigger a second, slow sync and could block
+        // the first `getChats`; query what is already available instead.
+        let chats = match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            functions::get_chats(None, limit, client_id),
+        )
+        .await
+        {
+            Ok(result) => td(result)?,
+            Err(_) => bail!("getChats timed out"),
+        };
         let enums::Chats::Chats(chats) = chats;
 
-        let mut out = Vec::with_capacity(chats.chat_ids.len());
-        for chat_id in chats.chat_ids {
-            let chat = td(functions::get_chat(chat_id, self.client_id).await)?;
-            let enums::Chat::Chat(chat) = chat;
-            out.push(ChatInfo {
-                id: chat.id,
-                title: chat.title,
-            });
-        }
-        Ok(out)
+        let futures = chats.chat_ids.into_iter().map(|chat_id| async move {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                functions::get_chat(chat_id, client_id),
+            )
+            .await
+            {
+                Ok(Ok(enums::Chat::Chat(chat))) => ChatInfo {
+                    id: chat.id,
+                    title: chat.title,
+                },
+                _ => ChatInfo {
+                    id: chat_id,
+                    title: format!("Chat {chat_id}"),
+                },
+            }
+        });
+        Ok(futures::future::join_all(futures).await)
     }
 }
 
