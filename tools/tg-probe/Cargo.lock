@@ -399,6 +399,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gramterm-tg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tdlib-rs",
+ "tokio",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1049,7 +1058,7 @@ name = "tg-probe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "tdlib-rs",
+ "gramterm-tg",
  "tokio",
 ]
 

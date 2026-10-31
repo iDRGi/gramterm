@@ -1,6 +1,7 @@
 target/
 /.research
 /smoke
+crates/gramterm-tg/Cargo.lock
 *.log
 .env
 .idea/
