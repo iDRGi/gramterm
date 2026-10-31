@@ -2,15 +2,26 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-use gramterm_tg::{AuthState, ChatInfo, Config, TgClient};
+use gramterm_tg::{AuthState, ChatInfo, Config, MessageInfo, TgClient};
 
-use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message};
+use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message, MsgId, SendFailure};
+use crate::message_cache;
+
+/// How many recent messages `open_chat` loads.
+const HISTORY_LIMIT: i32 = 50;
 
 enum Command {
     Phone(String),
     Code(String),
     Password(String),
     Qr,
+    Logout,
+    History(ChatId),
+    Send {
+        chat_id: ChatId,
+        text: String,
+        temp_id: MsgId,
+    },
 }
 
 enum Event {
@@ -18,8 +29,23 @@ enum Event {
     Chats(Vec<ChatInfo>),
     ChatsLoading,
     ChatsFailed,
+    Messages {
+        chat_id: ChatId,
+        messages: Vec<MessageInfo>,
+    },
+    HistoryFailed(ChatId),
     Notice(String),
     Error(String),
+    Sent {
+        chat_id: ChatId,
+        temp_id: MsgId,
+        message: Message,
+    },
+    SendFailed {
+        chat_id: ChatId,
+        temp_id: MsgId,
+        error: String,
+    },
 }
 
 pub struct TgBackend {
@@ -30,7 +56,10 @@ pub struct TgBackend {
     chats_loading: bool,
     message_cache: HashMap<ChatId, Vec<Message>>,
     history_loading: HashSet<ChatId>,
+    history_loaded: HashSet<ChatId>,
     notice: Option<String>,
+    next_temp_id: MsgId,
+    send_failure: Option<SendFailure>,
 }
 
 impl TgBackend {
@@ -52,8 +81,29 @@ impl TgBackend {
             chats_loading: false,
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
+            history_loaded: HashSet::new(),
             notice: None,
+            next_temp_id: -1,
+            send_failure: None,
         }
+    }
+
+    #[cfg(test)]
+    fn for_test() -> (Self, Sender<Event>, Receiver<Command>) {
+        let (tx, commands) = mpsc::channel();
+        let (events, rx) = mpsc::channel();
+        let backend = Self {
+            tx,
+            rx,
+            auth: AuthView::Ready,
+            chats: Vec::new(),
+            chats_loading: false,
+            message_cache: HashMap::new(),
+            history_loading: HashSet::new(),
+            history_loaded: HashSet::new(),
+            notice: None,
+        };
+        (backend, events, commands)
     }
 
     fn start(config: Config) -> Self {
@@ -118,6 +168,116 @@ impl TgBackend {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
+                            Ok(Command::Logout) if state == AuthState::Ready => {
+                                tracing::info!("logout requested from the UI");
+                                match client.log_out().await {
+                                    Ok(()) => {
+                                        match client
+                                            .wait_after_logout(Duration::from_secs(20))
+                                            .await
+                                        {
+                                            Ok(AuthState::Closed) => {
+                                                match client.reconnect().await {
+                                                    Ok(next) => {
+                                                        state = next;
+                                                        let _ = event_tx
+                                                            .send(Event::Auth(map_auth(state.clone())));
+                                                    }
+                                                    Err(error) => {
+                                                        tracing::error!(
+                                                            "TDLib reconnect after logout failed: {error:#}"
+                                                        );
+                                                        let _ = event_tx.send(Event::Error(format!(
+                                                            "{error:#}"
+                                                        )));
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            Ok(next) => {
+                                                state = next;
+                                                let _ =
+                                                    event_tx.send(Event::Auth(map_auth(state.clone())));
+                                            }
+                                            Err(error) => {
+                                                tracing::error!(
+                                                    "TDLib logout failed: {error:#}"
+                                                );
+                                                let _ = event_tx
+                                                    .send(Event::Error(format!("{error:#}")));
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!("TDLib log_out failed: {error:#}");
+                                        let _ = event_tx.send(Event::Auth(map_auth(state.clone())));
+                                        let _ = event_tx
+                                            .send(Event::Notice(format!("logout failed: {error:#}")));
+                                    }
+                                }
+                            }
+                            Ok(Command::History(chat_id)) => {
+                                load_history(&client, &event_tx, chat_id).await;
+                            }
+                            Ok(Command::Send {
+                                chat_id,
+                                text,
+                                temp_id,
+                            }) => {
+                                if state != AuthState::Ready {
+                                    let _ = event_tx.send(Event::SendFailed {
+                                        chat_id,
+                                        temp_id,
+                                        error: "TDLib is not ready".into(),
+                                    });
+                                } else if text.trim().is_empty() {
+                                    let _ = event_tx.send(Event::SendFailed {
+                                        chat_id,
+                                        temp_id,
+                                        error: "message is empty".into(),
+                                    });
+                                } else {
+                                    match tokio::time::timeout(
+                                        Duration::from_secs(30),
+                                        client.send_text(chat_id, &text),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(info)) => {
+                                            let message = Message {
+                                                id: info.id,
+                                                chat_id: info.chat_id,
+                                                sender: info.sender,
+                                                text: info.text,
+                                                outgoing: info.outgoing,
+                                                time: info.time,
+                                                pending: false,
+                                                edited: false,
+                                            };
+                                            let _ = event_tx.send(Event::Sent {
+                                                chat_id,
+                                                temp_id,
+                                                message,
+                                            });
+                                        }
+                                        Ok(Err(error)) => {
+                                            let _ = event_tx.send(Event::SendFailed {
+                                                chat_id,
+                                                temp_id,
+                                                error: format!("{error:#}"),
+                                            });
+                                        }
+                                        Err(_) => {
+                                            let _ = event_tx.send(Event::SendFailed {
+                                                chat_id,
+                                                temp_id,
+                                                error: "send timed out".into(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                             Ok(_) => {}
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => return,
@@ -154,7 +314,10 @@ impl TgBackend {
             chats_loading: false,
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
+            history_loaded: HashSet::new(),
             notice: None,
+            next_temp_id: -1,
+            send_failure: None,
         }
     }
 }
@@ -173,6 +336,62 @@ async fn publish_ready(client: &TgClient, events: &Sender<Event>) {
             let _ = events.send(Event::ChatsFailed);
         }
     }
+}
+
+async fn load_history(client: &TgClient, events: &Sender<Event>, chat_id: ChatId) {
+    tracing::info!("loading history for chat {chat_id}");
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.history(chat_id, HISTORY_LIMIT),
+    )
+    .await;
+    match result {
+        Ok(Ok(messages)) => {
+            tracing::info!(
+                "history loaded for chat {chat_id}: {} messages",
+                messages.len()
+            );
+            let _ = events.send(Event::Messages { chat_id, messages });
+        }
+        Ok(Err(error)) => {
+            tracing::error!("history failed for chat {chat_id}: {error:#}");
+            let _ = events.send(Event::Notice(format!("{error:#}")));
+            let _ = events.send(Event::HistoryFailed(chat_id));
+        }
+        Err(_) => {
+            tracing::error!("history timed out for chat {chat_id}");
+            let _ = events.send(Event::Notice(format!(
+                "loading messages timed out (chat {chat_id})"
+            )));
+            let _ = events.send(Event::HistoryFailed(chat_id));
+        }
+    }
+}
+
+fn map_message_info(info: MessageInfo) -> Message {
+    Message {
+        id: info.id,
+        chat_id: info.chat_id,
+        sender: info.sender,
+        text: info.text,
+        outgoing: info.outgoing,
+        time: info.time,
+        pending: false,
+        edited: false,
+    }
+}
+
+/// Replaces the cached history with the freshly loaded page while keeping
+/// local-only messages (for example an optimistic pending send) at the end.
+fn merge_history(cache: &mut Vec<Message>, incoming: Vec<Message>) {
+    let known: HashSet<_> = incoming.iter().map(|message| message.id).collect();
+    let mut merged = incoming;
+    merged.extend(
+        cache
+            .drain(..)
+            .filter(|message| !known.contains(&message.id)),
+    );
+    *cache = merged;
 }
 
 fn map_auth(state: AuthState) -> AuthView {
@@ -208,8 +427,36 @@ impl Backend for TgBackend {
         let _ = self.tx.send(Command::Qr);
     }
 
+    fn logout(&mut self) {
+        self.chats.clear();
+        self.message_cache.clear();
+        self.history_loading.clear();
+        self.history_loaded.clear();
+        self.chats_loading = false;
+        self.notice = None;
+        if self.tx.send(Command::Logout).is_err() {
+            self.auth = AuthView::Error("TDLib worker is not running".into());
+        } else {
+            self.auth = AuthView::Starting;
+        }
+    }
+
+    fn open_chat(&mut self, chat: ChatId) {
+        if self.history_loaded.contains(&chat) || !self.history_loading.insert(chat) {
+            return;
+        }
+        tracing::debug!("requesting history for chat {chat}");
+        if self.tx.send(Command::History(chat)).is_err() {
+            self.history_loading.remove(&chat);
+        }
+    }
+
     fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
+    }
+
+    fn take_send_failure(&mut self) -> Option<SendFailure> {
+        self.send_failure.take()
     }
 
     fn chats_loading(&self) -> bool {
@@ -217,7 +464,7 @@ impl Backend for TgBackend {
     }
 
     fn can_send(&self) -> bool {
-        false
+        self.auth == AuthView::Ready
     }
 
     fn chats(&self) -> &[Chat] {
@@ -236,20 +483,44 @@ impl Backend for TgBackend {
     }
 
     fn send_text(&mut self, chat: ChatId, text: String) -> Message {
+        let temp_id = self.next_temp_id;
+        self.next_temp_id = self.next_temp_id.wrapping_sub(1);
         let message = Message {
-            id: 0,
+            id: temp_id,
             chat_id: chat,
             sender: "You".into(),
-            text,
+            text: text.clone(),
             outgoing: true,
             time: "now".into(),
             pending: true,
             edited: false,
         };
-        self.message_cache
-            .entry(chat)
-            .or_default()
-            .push(message.clone());
+
+        if text.trim().is_empty() {
+            return message;
+        }
+        if self.auth != AuthView::Ready {
+            self.send_failure = Some(SendFailure {
+                chat_id: chat,
+                text,
+                error: "TDLib is not ready".into(),
+            });
+            return message;
+        }
+
+        message_cache::push_pending(&mut self.message_cache, message.clone());
+        if let Err(error) = self.tx.send(Command::Send {
+            chat_id: chat,
+            text,
+            temp_id,
+        }) {
+            message_cache::remove_pending(&mut self.message_cache, chat, temp_id);
+            self.send_failure = Some(SendFailure {
+                chat_id: chat,
+                text: message.text.clone(),
+                error: format!("TDLib worker is not running: {error}"),
+            });
+        }
         message
     }
 
@@ -282,11 +553,45 @@ impl Backend for TgBackend {
                 Event::ChatsFailed => {
                     self.chats_loading = false;
                 }
+                Event::Messages { chat_id, messages } => {
+                    self.history_loading.remove(&chat_id);
+                    self.history_loaded.insert(chat_id);
+                    let incoming = messages.into_iter().map(map_message_info).collect();
+                    merge_history(self.message_cache.entry(chat_id).or_default(), incoming);
+                }
+                Event::HistoryFailed(chat_id) => {
+                    self.history_loading.remove(&chat_id);
+                }
                 Event::Notice(notice) => {
                     self.notice = Some(notice);
                 }
                 Event::Error(error) => {
                     self.auth = AuthView::Error(error);
+                }
+                Event::Sent {
+                    chat_id,
+                    temp_id,
+                    message,
+                } => {
+                    message_cache::replace_pending(
+                        &mut self.message_cache,
+                        chat_id,
+                        temp_id,
+                        message,
+                    );
+                }
+                Event::SendFailed {
+                    chat_id,
+                    temp_id,
+                    error,
+                } => {
+                    let pending =
+                        message_cache::remove_pending(&mut self.message_cache, chat_id, temp_id);
+                    self.send_failure = Some(SendFailure {
+                        chat_id,
+                        text: pending.map(|message| message.text).unwrap_or_default(),
+                        error,
+                    });
                 }
             }
         }
@@ -310,4 +615,110 @@ fn config_from_env() -> anyhow::Result<Config> {
         }
     };
     Ok(Config::new(api_id, api_hash, data_dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(id: i64, chat_id: i64, text: &str) -> MessageInfo {
+        MessageInfo {
+            id,
+            chat_id,
+            sender: "Them".into(),
+            text: text.into(),
+            outgoing: false,
+            time: "12:00".into(),
+        }
+    }
+
+    fn message(id: i64, text: &str, pending: bool) -> Message {
+        Message {
+            id,
+            chat_id: 7,
+            sender: "You".into(),
+            text: text.into(),
+            outgoing: true,
+            time: "now".into(),
+            pending,
+            edited: false,
+        }
+    }
+
+    fn backend() -> (TgBackend, Sender<Event>, Receiver<Command>) {
+        TgBackend::for_test()
+    }
+
+    #[test]
+    fn open_chat_requests_history_once() {
+        let (mut backend, _events, commands) = backend();
+        backend.open_chat(7);
+        assert!(backend.history_loading(7));
+        assert!(matches!(commands.try_recv(), Ok(Command::History(7))));
+
+        backend.open_chat(7);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn history_is_not_requested_again_after_loading() {
+        let (mut backend, events, commands) = backend();
+        backend.open_chat(7);
+        events
+            .send(Event::Messages {
+                chat_id: 7,
+                messages: Vec::new(),
+            })
+            .unwrap();
+        assert!(backend.tick().is_none());
+        assert!(!backend.history_loading(7));
+
+        backend.open_chat(7);
+        assert!(commands.try_recv().is_ok());
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn messages_event_fills_cache_and_clears_loading() {
+        let (mut backend, events, _commands) = backend();
+        backend.open_chat(7);
+        events
+            .send(Event::Messages {
+                chat_id: 7,
+                messages: vec![info(1, 7, "hi")],
+            })
+            .unwrap();
+        assert!(backend.tick().is_none());
+
+        assert!(!backend.history_loading(7));
+        let messages = backend.messages(7);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, 1);
+        assert_eq!(messages[0].text, "hi");
+        assert_eq!(messages[0].sender, "Them");
+        assert!(!messages[0].pending);
+        assert!(!messages[0].edited);
+    }
+
+    #[test]
+    fn history_failure_clears_loading_and_allows_retry() {
+        let (mut backend, events, commands) = backend();
+        backend.open_chat(7);
+        events.send(Event::HistoryFailed(7)).unwrap();
+        assert!(backend.tick().is_none());
+        assert!(!backend.history_loading(7));
+
+        backend.open_chat(7);
+        assert!(matches!(commands.try_recv(), Ok(Command::History(7))));
+    }
+
+    #[test]
+    fn history_merge_dedupes_loaded_messages_and_keeps_local_tail() {
+        let mut cache = vec![message(1, "stale copy", false), message(9, "pending", true)];
+        merge_history(&mut cache, vec![map_message_info(info(1, 7, "fresh copy"))]);
+
+        assert_eq!(cache.iter().map(|m| m.id).collect::<Vec<_>>(), vec![1, 9]);
+        assert_eq!(cache[0].text, "fresh copy");
+        assert!(cache[1].pending);
+    }
 }

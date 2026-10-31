@@ -5,6 +5,7 @@
 //! `tdlib-rs` details.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use tdlib_rs::enums::{self, Update};
@@ -84,8 +85,6 @@ impl TgClient {
     /// `waitTdlibParameters` internally.
     pub async fn connect(config: Config) -> Result<(Self, AuthState)> {
         config.prepare()?;
-        tracing::info!("tdlib: creating client");
-        let client_id = tdlib_rs::create_client();
         let (tx, updates) = mpsc::unbounded_channel();
         std::thread::spawn(move || {
             loop {
@@ -103,6 +102,16 @@ impl TgClient {
             }
         });
 
+        Self::start(config, updates).await
+    }
+
+    /// Creates a TDLib client that shares this instance's update loop.
+    async fn start(
+        config: Config,
+        updates: mpsc::UnboundedReceiver<(i32, Update)>,
+    ) -> Result<(Self, AuthState)> {
+        tracing::info!("tdlib: creating client");
+        let client_id = tdlib_rs::create_client();
         let mut client = Self {
             client_id,
             config,
@@ -195,6 +204,46 @@ impl TgClient {
     pub async fn request_qr(&self) -> Result<()> {
         td(functions::request_qr_code_authentication(Vec::new(), self.client_id).await)?;
         Ok(())
+    }
+
+    /// Logs the current account out. TDLib destroys the local data and emits
+    /// `authorizationStateClosed`; call [`Self::wait_after_logout`] and then
+    /// [`Self::reconnect`] to get back to a usable client.
+    pub async fn log_out(&self) -> Result<()> {
+        td(functions::log_out(self.client_id).await)?;
+        Ok(())
+    }
+
+    /// Waits for the authorization state that follows a successful logout.
+    ///
+    /// TDLib 1.8 sends `Closed`; older versions may go straight back to
+    /// `WaitPhoneNumber`, which is returned as-is.
+    pub async fn wait_after_logout(&mut self, timeout: Duration) -> Result<AuthState> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                bail!("timed out waiting for TDLib after logout");
+            }
+            match tokio::time::timeout(remaining, self.next_auth()).await {
+                Ok(Ok(state @ (AuthState::Closed | AuthState::WaitPhoneNumber))) => {
+                    return Ok(state);
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => bail!("timed out waiting for TDLib after logout"),
+            }
+        }
+    }
+
+    /// Creates a fresh TDLib client after a logout, reusing the existing
+    /// update loop so updates for the old client id are not consumed by a
+    /// second receiver thread.
+    pub async fn reconnect(&mut self) -> Result<AuthState> {
+        self.config.prepare()?;
+        self.client_id = tdlib_rs::create_client();
+        td(functions::get_option("version".into(), self.client_id).await)?;
+        self.next_auth().await
     }
 
     pub async fn me(&self) -> Result<UserInfo> {

@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -8,6 +8,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, Focus, Hit, LoginFocus, LoginHit, Mode, Popup};
 use crate::backend::{AuthView, ChatKind};
 use crate::i18n;
+use crate::qr;
 use crate::theme::Theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -51,6 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Popup::Help => draw_help(frame, app, area, theme),
         Popup::Command => draw_prompt(frame, app, area, theme, true),
         Popup::Search => draw_prompt(frame, app, area, theme, false),
+        Popup::LogoutConfirm => draw_logout_confirm(frame, app, area, theme),
         Popup::None => {}
     }
 }
@@ -60,6 +62,11 @@ fn base(theme: Theme) -> Style {
 }
 
 fn draw_login(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
+    if let AuthView::WaitOtherDevice { link } = app.backend.auth() {
+        draw_other_device(frame, app, area, theme, &link);
+        return;
+    }
+
     let popup = login_card(area);
     frame.render_widget(Clear, popup);
 
@@ -353,6 +360,229 @@ fn login_card(area: Rect) -> Rect {
     )
 }
 
+fn draw_other_device(frame: &mut Frame, app: &App, area: Rect, theme: Theme, link: &str) {
+    if let Some(rows) = qr::render(link, 4) {
+        let width = rows.first().map(|row| row.chars().count()).unwrap_or(0);
+        let popup_width = (width as u16 + 4).max(60);
+        let popup_height = rows.len() as u16 + 7;
+        if width > 0
+            && popup_width <= area.width.saturating_sub(2)
+            && popup_height <= area.height.saturating_sub(2)
+        {
+            draw_qr_card(frame, app, area, theme, rows);
+            return;
+        }
+    }
+    draw_qr_fallback(frame, app, area, theme, link);
+}
+
+fn draw_qr_card(frame: &mut Frame, app: &App, area: Rect, theme: Theme, rows: Vec<String>) {
+    let width = rows
+        .first()
+        .map(|row| row.chars().count() as u16)
+        .unwrap_or(0);
+    let popup_width = (width + 4).max(60);
+    let popup_height = rows.len() as u16 + 7;
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(popup_width) / 2,
+        area.y + area.height.saturating_sub(popup_height) / 2,
+        popup_width,
+        popup_height,
+    );
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" {} ", i18n::t(app.lang, "app_title")),
+            Style::default().fg(theme.accent),
+        ))
+        .style(base(theme));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(rows.len() as u16),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr"),
+            Style::default().fg(theme.accent),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme)),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr_scan"),
+            Style::default().fg(theme.fg),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme))
+        .wrap(Wrap { trim: true }),
+        chunks[1],
+    );
+
+    let qr_lines: Vec<Line> = rows
+        .into_iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                row,
+                Style::default().fg(Color::Black).bg(Color::White),
+            ))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(qr_lines)
+            .alignment(Alignment::Center)
+            .style(base(theme)),
+        chunks[3],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr_waiting"),
+            Style::default().fg(theme.dim),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme)),
+        chunks[4],
+    );
+}
+
+fn draw_qr_fallback(frame: &mut Frame, app: &App, area: Rect, theme: Theme, link: &str) {
+    let popup = login_card(area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" {} ", i18n::t(app.lang, "app_title")),
+            Style::default().fg(theme.accent),
+        ))
+        .style(base(theme));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr"),
+            Style::default().fg(theme.accent),
+        )))
+        .style(base(theme)),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr_fallback"),
+            Style::default().fg(theme.fg),
+        )))
+        .style(base(theme))
+        .wrap(Wrap { trim: true }),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr_link"),
+            Style::default().fg(theme.dim),
+        )))
+        .style(base(theme)),
+        chunks[2],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            link,
+            Style::default().fg(theme.accent),
+        )))
+        .style(base(theme))
+        .wrap(Wrap { trim: false }),
+        chunks[3],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_qr_waiting"),
+            Style::default().fg(theme.dim),
+        )))
+        .style(base(theme)),
+        chunks[4],
+    );
+}
+
+fn draw_logout_confirm(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    if area.width < 24 || area.height < 8 {
+        return;
+    }
+    let width = area.width.saturating_sub(8).clamp(24, 68);
+    let height = 9;
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.error))
+        .title(Span::styled(
+            format!(" {} ", i18n::t(app.lang, "logout_title")),
+            Style::default().fg(theme.error),
+        ))
+        .style(base(theme));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "logout_confirm_body"),
+            Style::default().fg(theme.fg),
+        )))
+        .style(base(theme))
+        .wrap(Wrap { trim: true }),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "logout_confirm_hint"),
+            Style::default().fg(theme.accent),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme)),
+        chunks[1],
+    );
+}
+
 fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     let mut spans = vec![
         Span::styled(
@@ -555,13 +785,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
 
     let messages = app.current_messages().to_vec();
     if messages.is_empty() {
+        let loading = app
+            .current_chat_id()
+            .is_some_and(|chat_id| app.backend.history_loading(chat_id));
+        let label = if loading {
+            i18n::t(app.lang, "loading_messages")
+        } else {
+            i18n::t(app.lang, "no_messages")
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                i18n::t(app.lang, "no_messages"),
-                Style::default().fg(theme.dim),
-            ))
-            .alignment(Alignment::Center)
-            .style(base(theme)),
+            Paragraph::new(Span::styled(label, Style::default().fg(theme.dim)))
+                .alignment(Alignment::Center)
+                .style(base(theme)),
             inner,
         );
         return;
@@ -822,4 +1057,107 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         width,
         height,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{Backend, Chat, ChatId, Message};
+    use crate::i18n::Lang;
+    use crate::theme::ThemeKind;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    struct StubBackend {
+        chats: Vec<Chat>,
+        loading: bool,
+    }
+
+    impl Backend for StubBackend {
+        fn auth(&self) -> AuthView {
+            AuthView::Ready
+        }
+
+        fn submit_phone(&mut self, _phone: String) {}
+
+        fn submit_code(&mut self, _code: String) {}
+
+        fn submit_password(&mut self, _password: String) {}
+
+        fn history_loading(&self, _chat: ChatId) -> bool {
+            self.loading
+        }
+
+        fn chats(&self) -> &[Chat] {
+            &self.chats
+        }
+
+        fn messages(&self, _chat: ChatId) -> &[Message] {
+            &[]
+        }
+
+        fn send_text(&mut self, chat: ChatId, text: String) -> Message {
+            Message {
+                id: 1,
+                chat_id: chat,
+                sender: "You".into(),
+                text,
+                outgoing: true,
+                time: "now".into(),
+                pending: false,
+                edited: false,
+            }
+        }
+
+        fn mark_read(&mut self, _chat: ChatId) {}
+
+        fn tick(&mut self) -> Option<Message> {
+            None
+        }
+    }
+
+    fn make_app(loading: bool, lang: Lang) -> App {
+        let chats = vec![Chat {
+            id: 1,
+            title: "Test".into(),
+            preview: String::new(),
+            unread: 0,
+            muted: false,
+            pinned: false,
+            kind: ChatKind::Private,
+        }];
+        App::with_backend(
+            Box::new(StubBackend { chats, loading }),
+            lang,
+            ThemeKind::Mocha,
+            false,
+        )
+    }
+
+    fn render(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn shows_loading_state_while_history_is_loading() {
+        let mut app = make_app(true, Lang::En);
+        assert!(render(&mut app).contains("Loading messages…"));
+
+        let mut app = make_app(true, Lang::Ru);
+        assert!(render(&mut app).contains("Загружаем сообщения…"));
+    }
+
+    #[test]
+    fn shows_empty_state_after_history_loaded() {
+        let mut app = make_app(false, Lang::En);
+        assert!(render(&mut app).contains("No messages yet"));
+    }
 }

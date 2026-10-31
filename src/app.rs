@@ -52,6 +52,7 @@ pub enum Popup {
     Help,
     Command,
     Search,
+    LogoutConfirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +114,7 @@ pub struct App {
     pub follow_bottom: bool,
     pub frame: u64,
     pub demo: bool,
+    logging_out: bool,
 }
 
 impl App {
@@ -162,6 +164,7 @@ impl App {
             follow_bottom: true,
             frame: 0,
             demo: true,
+            logging_out: false,
         }
     }
 
@@ -177,6 +180,30 @@ impl App {
         self.current_chat_id()
             .map(|id| self.backend.messages(id))
             .unwrap_or(&[])
+    }
+
+    /// Keeps the selected message in step with asynchronously loaded history.
+    /// While following the bottom the newest message stays selected; otherwise
+    /// a selection that fell out of range is pulled back to the last message.
+    fn sync_message_selection(&mut self) {
+        // Before a chat is opened (and before history arrives) there is
+        // nothing to select; leave the chat list preview untouched.
+        if self.focus != Focus::Messages && self.selected_message.is_none() {
+            return;
+        }
+        let len = self.current_messages().len();
+        let selected = if self.follow_bottom {
+            len.checked_sub(1)
+        } else {
+            match self.selected_message {
+                Some(index) if index >= len => len.checked_sub(1),
+                other => other,
+            }
+        };
+        if self.selected_message != selected {
+            self.selected_message = selected;
+            self.dirty = true;
+        }
     }
 
     pub fn is_ready(&self) -> bool {
@@ -307,12 +334,19 @@ impl App {
             self.status = format!("new: {}", message.sender);
             self.dirty = true;
         }
+        self.sync_message_selection();
         let auth_after = self.backend.auth();
         if auth_before != auth_after {
             self.dirty = true;
             self.login_busy = false;
             match &auth_after {
-                AuthView::WaitPhoneNumber => self.login_focus = LoginFocus::Phone,
+                AuthView::WaitPhoneNumber => {
+                    self.login_focus = LoginFocus::Phone;
+                    if self.logging_out {
+                        self.logging_out = false;
+                        self.status = i18n::t(self.lang, "logout_done").to_string();
+                    }
+                }
                 AuthView::WaitCode => {
                     self.login_focus = LoginFocus::Code;
                     self.login_error = None;
@@ -321,9 +355,16 @@ impl App {
                     self.login_focus = LoginFocus::Password;
                     self.login_error = None;
                 }
-                AuthView::WaitOtherDevice { .. } => self.login_focus = LoginFocus::Qr,
-                AuthView::Error(message) => self.login_error = Some(message.clone()),
+                AuthView::WaitOtherDevice { .. } => {
+                    self.login_focus = LoginFocus::Qr;
+                    self.status.clear();
+                }
+                AuthView::Error(message) => {
+                    self.logging_out = false;
+                    self.login_error = Some(message.clone());
+                }
                 AuthView::Ready => {
+                    self.logging_out = false;
                     self.focus = Focus::Chats;
                     self.status = i18n::t(self.lang, "connected").to_string();
                 }
@@ -337,6 +378,21 @@ impl App {
             } else {
                 self.login_error = Some(notice);
             }
+            self.dirty = true;
+        }
+        if let Some(failure) = self.backend.take_send_failure() {
+            let restored = !failure.text.is_empty()
+                && self.current_chat_id() == Some(failure.chat_id)
+                && self.input.trim().is_empty();
+            if restored {
+                self.input = failure.text;
+            }
+            let key = if restored {
+                "send_failed_restored"
+            } else {
+                "send_failed"
+            };
+            self.status = format!("{}: {}", i18n::t(self.lang, key), failure.error);
             self.dirty = true;
         }
     }
@@ -430,6 +486,19 @@ impl App {
             }
             Popup::Search => {
                 self.on_search_key(key);
+                return;
+            }
+            Popup::LogoutConfirm => {
+                match key.code {
+                    KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        self.confirm_logout();
+                    }
+                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                        self.popup = Popup::None;
+                        self.dirty = true;
+                    }
+                    _ => {}
+                }
                 return;
             }
             Popup::None => {}
@@ -675,6 +744,40 @@ impl App {
         self.dirty = true;
     }
 
+    fn confirm_logout(&mut self) {
+        self.popup = Popup::None;
+        if self.demo {
+            self.status = i18n::t(self.lang, "logout_demo").to_string();
+            self.dirty = true;
+            return;
+        }
+        self.backend.logout();
+        self.logging_out = true;
+        self.reset_login_state();
+        self.status = i18n::t(self.lang, "logout_requested").to_string();
+        self.dirty = true;
+    }
+
+    fn reset_login_state(&mut self) {
+        self.focus = Focus::Chats;
+        self.selected_chat = 0;
+        self.selected_message = None;
+        self.chat_scroll = 0;
+        self.message_scroll = 0;
+        self.follow_bottom = true;
+        self.input.clear();
+        self.search.clear();
+        self.command.clear();
+        self.login_phone.clear();
+        self.login_code.clear();
+        self.login_password.clear();
+        self.login_focus = LoginFocus::Phone;
+        self.login_error = None;
+        self.login_show_password = false;
+        self.login_busy = false;
+        self.popup = Popup::None;
+    }
+
     fn on_command_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -747,6 +850,14 @@ impl App {
             }
             "demo" => {
                 self.status = i18n::t(self.lang, "demo").to_string();
+                self.dirty = true;
+            }
+            "logout" | "signout" => {
+                if self.demo {
+                    self.status = i18n::t(self.lang, "logout_demo").to_string();
+                } else {
+                    self.popup = Popup::LogoutConfirm;
+                }
                 self.dirty = true;
             }
             "simple" => {
@@ -878,6 +989,7 @@ fn inside(rect: Rect, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{ChatKind, Message, SendFailure};
     use crossterm::event::{KeyEventKind, KeyEventState};
 
     fn app() -> App {
@@ -890,6 +1002,76 @@ mod tests {
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
+        }
+    }
+
+    struct FailingBackend {
+        chats: Vec<Chat>,
+        failure: Option<SendFailure>,
+    }
+
+    impl FailingBackend {
+        fn new() -> Self {
+            Self {
+                chats: vec![Chat {
+                    id: 1,
+                    title: "Test".into(),
+                    preview: String::new(),
+                    unread: 0,
+                    muted: false,
+                    pinned: false,
+                    kind: ChatKind::Private,
+                }],
+                failure: None,
+            }
+        }
+    }
+
+    impl Backend for FailingBackend {
+        fn auth(&self) -> AuthView {
+            AuthView::Ready
+        }
+
+        fn submit_phone(&mut self, _phone: String) {}
+
+        fn submit_code(&mut self, _code: String) {}
+
+        fn submit_password(&mut self, _password: String) {}
+
+        fn chats(&self) -> &[Chat] {
+            &self.chats
+        }
+
+        fn messages(&self, _chat: ChatId) -> &[Message] {
+            &[]
+        }
+
+        fn send_text(&mut self, chat: ChatId, text: String) -> Message {
+            self.failure = Some(SendFailure {
+                chat_id: chat,
+                text: text.clone(),
+                error: "network down".into(),
+            });
+            Message {
+                id: -1,
+                chat_id: chat,
+                sender: "You".into(),
+                text,
+                outgoing: true,
+                time: "now".into(),
+                pending: true,
+                edited: false,
+            }
+        }
+
+        fn mark_read(&mut self, _chat: ChatId) {}
+
+        fn tick(&mut self) -> Option<Message> {
+            None
+        }
+
+        fn take_send_failure(&mut self) -> Option<SendFailure> {
+            self.failure.take()
         }
     }
 
@@ -942,5 +1124,69 @@ mod tests {
         let mut app = app();
         app.execute_command("lang en");
         assert_eq!(app.lang, Lang::En);
+    }
+
+    #[test]
+    fn opening_a_chat_selects_the_last_cached_message() {
+        let mut app = app();
+        app.selected_chat = 1;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.selected_message, Some(3));
+        assert!(app.follow_bottom);
+        assert_eq!(app.message_scroll, 0);
+    }
+
+    #[test]
+    fn startup_does_not_select_a_message_before_a_chat_is_opened() {
+        let mut app = app();
+        app.on_tick();
+        assert_eq!(app.selected_message, None);
+    }
+
+    #[test]
+    fn messages_arriving_while_following_bottom_stay_selected() {
+        let mut app = app();
+        app.selected_chat = 1;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.selected_message, Some(3));
+
+        // Simulate history arriving after the chat was opened.
+        app.backend.send_text(2, "later".into());
+        app.on_tick();
+        assert_eq!(app.selected_message, Some(4));
+    }
+
+    #[test]
+    fn messages_arriving_while_scrolled_up_do_not_move_the_selection() {
+        let mut app = app();
+        app.selected_chat = 1;
+        app.on_key(key(KeyCode::Enter));
+        app.move_message(-1);
+        assert_eq!(app.selected_message, Some(2));
+        assert!(!app.follow_bottom);
+
+        app.backend.send_text(2, "later".into());
+        app.on_tick();
+        assert_eq!(app.selected_message, Some(2));
+    }
+
+    #[test]
+    fn failed_send_restores_the_composer_text() {
+        let mut app = App::with_backend(
+            Box::new(FailingBackend::new()),
+            Lang::En,
+            ThemeKind::Mocha,
+            true,
+        );
+        app.focus = Focus::Composer;
+        app.input = "hello".into();
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.input.is_empty());
+
+        app.on_tick();
+
+        assert_eq!(app.input, "hello");
+        assert!(app.status.contains("Send failed"));
+        assert!(app.status.contains("network down"));
     }
 }
