@@ -51,6 +51,7 @@ impl TgBackend {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
+        tracing::info!("starting TDLib backend");
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -58,20 +59,25 @@ impl TgBackend {
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
+                    tracing::error!("cannot build tokio runtime: {error}");
                     let _ =
                         event_tx.send(Event::Error(format!("cannot start tokio runtime: {error}")));
                     return;
                 }
             };
+            tracing::info!("tokio runtime ready");
 
             runtime.block_on(async move {
+                tracing::info!("connecting TDLib");
                 let (mut client, mut state) = match TgClient::connect(config).await {
                     Ok(pair) => pair,
                     Err(error) => {
+                        tracing::error!("TDLib connect failed: {error:#}");
                         let _ = event_tx.send(Event::Error(format!("{error:#}")));
                         return;
                     }
                 };
+                tracing::info!("TDLib connected: {state:?}");
 
                 let _ = event_tx.send(Event::Auth(map_auth(state.clone())));
                 if state == AuthState::Ready {

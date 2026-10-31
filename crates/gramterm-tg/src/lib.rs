@@ -4,8 +4,6 @@
 //! surface so the TUI can eventually depend on it without knowing about
 //! `tdlib-rs` details.
 
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -14,10 +12,6 @@ use tdlib_rs::functions;
 use tokio::sync::mpsc;
 
 const APPLICATION_NAME: &str = "Gramterm";
-
-unsafe extern "C" {
-    fn td_execute(request: *const c_char) -> *const c_char;
-}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -79,13 +73,21 @@ impl TgClient {
     /// `waitTdlibParameters` internally.
     pub async fn connect(config: Config) -> Result<(Self, AuthState)> {
         config.prepare()?;
-        init_logging(&config)?;
+        tracing::info!("tdlib: creating client");
         let client_id = tdlib_rs::create_client();
         let (tx, updates) = mpsc::unbounded_channel();
         std::thread::spawn(move || {
-            while let Some((update, client_id)) = tdlib_rs::receive() {
-                if tx.send((client_id, update)).is_err() {
-                    break;
+            loop {
+                match tdlib_rs::receive() {
+                    Some((update, client_id)) => {
+                        if tx.send((client_id, update)).is_err() {
+                            break;
+                        }
+                    }
+                    None => {
+                        // `receive` times out after a couple of seconds; keep
+                        // waiting instead of treating it as end-of-stream.
+                    }
                 }
             }
         });
@@ -97,8 +99,11 @@ impl TgClient {
         };
 
         // A new client sends nothing until it gets its first request.
+        tracing::info!("tdlib: get_option");
         td(functions::get_option("version".into(), client_id).await)?;
+        tracing::info!("tdlib: waiting for auth");
         let state = client.next_auth().await?;
+        tracing::info!("tdlib: auth state {state:?}");
         Ok((client, state))
     }
 
@@ -110,18 +115,24 @@ impl TgClient {
     /// answered here, so callers never see it.
     pub async fn next_auth(&mut self) -> Result<AuthState> {
         loop {
+            tracing::debug!("tdlib: waiting for update");
             let Some((client_id, update)) = self.updates.recv().await else {
                 bail!("TDLib update channel closed");
             };
+            tracing::debug!("tdlib: update received for client {client_id}");
             if client_id != self.client_id {
                 continue;
             }
             let Update::AuthorizationState(state) = update else {
+                tracing::debug!("tdlib: non-auth update");
                 continue;
             };
+            tracing::info!("tdlib: auth update");
             match state.authorization_state {
                 enums::AuthorizationState::WaitTdlibParameters => {
+                    tracing::info!("tdlib: setting parameters");
                     self.set_parameters().await?;
+                    tracing::info!("tdlib: parameters set");
                 }
                 other => return Ok(map_auth(other)),
             }
@@ -205,36 +216,6 @@ impl TgClient {
         }
         Ok(out)
     }
-}
-
-fn init_logging(config: &Config) -> Result<()> {
-    let path = config
-        .data_dir
-        .join("tdlib.log")
-        .to_string_lossy()
-        .replace('\\', "/");
-    let stream = format!(
-        r#"{{"@type":"setLogStream","log_stream":{{"@type":"logStreamFile","path":"{path}","max_file_size":10485760,"redirect_stderr":false}}}}"#
-    );
-    execute(&stream)?;
-    let verbosity = std::env::var("GRAMTERM_TDLIB_LOG")
-        .ok()
-        .and_then(|value| value.parse::<i32>().ok())
-        .unwrap_or(1);
-    execute(&format!(
-        r#"{{"@type":"setLogVerbosityLevel","new_verbosity_level":{verbosity}}}"#
-    ))?;
-    Ok(())
-}
-
-fn execute(request: &str) -> Result<String> {
-    let request = CString::new(request).context("TDLib request contains NUL")?;
-    let response = unsafe { td_execute(request.as_ptr()) };
-    if response.is_null() {
-        return Ok(String::new());
-    }
-    let response = unsafe { CStr::from_ptr(response) };
-    Ok(response.to_string_lossy().into_owned())
 }
 
 fn map_auth(state: enums::AuthorizationState) -> AuthState {
