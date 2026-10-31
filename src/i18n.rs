@@ -92,6 +92,8 @@ pub fn t(lang: Lang, key: &'static str) -> &'static str {
         (Lang::En, "no_chats") => "No chats",
         (Lang::Ru, "no_messages") => "Пока нет сообщений",
         (Lang::En, "no_messages") => "No messages yet",
+        (Lang::Ru, "loading_messages") => "Загружаем сообщения…",
+        (Lang::En, "loading_messages") => "Loading messages…",
         (Lang::Ru, "saved") => "Избранное",
         (Lang::En, "saved") => "Saved",
         (Lang::Ru, "private") => "Личный",
@@ -263,5 +265,9 @@ mod tests {
     fn russian_and_english_differ() {
         assert_ne!(t(Lang::Ru, "chats"), t(Lang::En, "chats"));
         assert_eq!(t(Lang::Ru, "chats"), "Чаты");
+        assert_ne!(
+            t(Lang::Ru, "loading_messages"),
+            t(Lang::En, "loading_messages")
+        );
     }
 }
