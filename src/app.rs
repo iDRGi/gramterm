@@ -52,6 +52,7 @@ pub enum Popup {
     Help,
     Command,
     Search,
+    LogoutConfirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +114,7 @@ pub struct App {
     pub follow_bottom: bool,
     pub frame: u64,
     pub demo: bool,
+    logging_out: bool,
 }
 
 impl App {
@@ -162,6 +164,7 @@ impl App {
             follow_bottom: true,
             frame: 0,
             demo: true,
+            logging_out: false,
         }
     }
 
@@ -312,7 +315,13 @@ impl App {
             self.dirty = true;
             self.login_busy = false;
             match &auth_after {
-                AuthView::WaitPhoneNumber => self.login_focus = LoginFocus::Phone,
+                AuthView::WaitPhoneNumber => {
+                    self.login_focus = LoginFocus::Phone;
+                    if self.logging_out {
+                        self.logging_out = false;
+                        self.status = i18n::t(self.lang, "logout_done").to_string();
+                    }
+                }
                 AuthView::WaitCode => {
                     self.login_focus = LoginFocus::Code;
                     self.login_error = None;
@@ -321,9 +330,16 @@ impl App {
                     self.login_focus = LoginFocus::Password;
                     self.login_error = None;
                 }
-                AuthView::WaitOtherDevice { .. } => self.login_focus = LoginFocus::Qr,
-                AuthView::Error(message) => self.login_error = Some(message.clone()),
+                AuthView::WaitOtherDevice { .. } => {
+                    self.login_focus = LoginFocus::Qr;
+                    self.status.clear();
+                }
+                AuthView::Error(message) => {
+                    self.logging_out = false;
+                    self.login_error = Some(message.clone());
+                }
                 AuthView::Ready => {
+                    self.logging_out = false;
                     self.focus = Focus::Chats;
                     self.status = i18n::t(self.lang, "connected").to_string();
                 }
@@ -430,6 +446,19 @@ impl App {
             }
             Popup::Search => {
                 self.on_search_key(key);
+                return;
+            }
+            Popup::LogoutConfirm => {
+                match key.code {
+                    KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        self.confirm_logout();
+                    }
+                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                        self.popup = Popup::None;
+                        self.dirty = true;
+                    }
+                    _ => {}
+                }
                 return;
             }
             Popup::None => {}
@@ -675,6 +704,40 @@ impl App {
         self.dirty = true;
     }
 
+    fn confirm_logout(&mut self) {
+        self.popup = Popup::None;
+        if self.demo {
+            self.status = i18n::t(self.lang, "logout_demo").to_string();
+            self.dirty = true;
+            return;
+        }
+        self.backend.logout();
+        self.logging_out = true;
+        self.reset_login_state();
+        self.status = i18n::t(self.lang, "logout_requested").to_string();
+        self.dirty = true;
+    }
+
+    fn reset_login_state(&mut self) {
+        self.focus = Focus::Chats;
+        self.selected_chat = 0;
+        self.selected_message = None;
+        self.chat_scroll = 0;
+        self.message_scroll = 0;
+        self.follow_bottom = true;
+        self.input.clear();
+        self.search.clear();
+        self.command.clear();
+        self.login_phone.clear();
+        self.login_code.clear();
+        self.login_password.clear();
+        self.login_focus = LoginFocus::Phone;
+        self.login_error = None;
+        self.login_show_password = false;
+        self.login_busy = false;
+        self.popup = Popup::None;
+    }
+
     fn on_command_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -747,6 +810,14 @@ impl App {
             }
             "demo" => {
                 self.status = i18n::t(self.lang, "demo").to_string();
+                self.dirty = true;
+            }
+            "logout" | "signout" => {
+                if self.demo {
+                    self.status = i18n::t(self.lang, "logout_demo").to_string();
+                } else {
+                    self.popup = Popup::LogoutConfirm;
+                }
                 self.dirty = true;
             }
             "simple" => {

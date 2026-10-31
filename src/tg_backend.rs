@@ -11,6 +11,7 @@ enum Command {
     Code(String),
     Password(String),
     Qr,
+    Logout,
 }
 
 enum Event {
@@ -118,6 +119,55 @@ impl TgBackend {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
+                            Ok(Command::Logout) if state == AuthState::Ready => {
+                                tracing::info!("logout requested from the UI");
+                                match client.log_out().await {
+                                    Ok(()) => {
+                                        match client
+                                            .wait_after_logout(Duration::from_secs(20))
+                                            .await
+                                        {
+                                            Ok(AuthState::Closed) => {
+                                                match client.reconnect().await {
+                                                    Ok(next) => {
+                                                        state = next;
+                                                        let _ = event_tx
+                                                            .send(Event::Auth(map_auth(state.clone())));
+                                                    }
+                                                    Err(error) => {
+                                                        tracing::error!(
+                                                            "TDLib reconnect after logout failed: {error:#}"
+                                                        );
+                                                        let _ = event_tx.send(Event::Error(format!(
+                                                            "{error:#}"
+                                                        )));
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            Ok(next) => {
+                                                state = next;
+                                                let _ =
+                                                    event_tx.send(Event::Auth(map_auth(state.clone())));
+                                            }
+                                            Err(error) => {
+                                                tracing::error!(
+                                                    "TDLib logout failed: {error:#}"
+                                                );
+                                                let _ = event_tx
+                                                    .send(Event::Error(format!("{error:#}")));
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!("TDLib log_out failed: {error:#}");
+                                        let _ = event_tx.send(Event::Auth(map_auth(state.clone())));
+                                        let _ = event_tx
+                                            .send(Event::Notice(format!("logout failed: {error:#}")));
+                                    }
+                                }
+                            }
                             Ok(_) => {}
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => return,
@@ -206,6 +256,19 @@ impl Backend for TgBackend {
 
     fn request_qr(&mut self) {
         let _ = self.tx.send(Command::Qr);
+    }
+
+    fn logout(&mut self) {
+        self.chats.clear();
+        self.message_cache.clear();
+        self.history_loading.clear();
+        self.chats_loading = false;
+        self.notice = None;
+        if self.tx.send(Command::Logout).is_err() {
+            self.auth = AuthView::Error("TDLib worker is not running".into());
+        } else {
+            self.auth = AuthView::Starting;
+        }
     }
 
     fn take_notice(&mut self) -> Option<String> {

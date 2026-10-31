@@ -60,7 +60,6 @@ pub trait Backend {
     fn history_loading(&self, _chat: ChatId) -> bool {
         false
     }
-    #[allow(dead_code)]
     fn logout(&mut self) {}
     fn take_notice(&mut self) -> Option<String> {
         None

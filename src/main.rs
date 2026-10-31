@@ -2,6 +2,7 @@ mod app;
 mod backend;
 mod demo;
 mod i18n;
+mod qr;
 #[cfg(feature = "tdlib")]
 mod tg_backend;
 mod theme;

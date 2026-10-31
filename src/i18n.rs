@@ -114,8 +114,8 @@ pub fn t(lang: Lang, key: &'static str) -> &'static str {
         (Lang::En, "search") => "Search",
         (Lang::Ru, "search_hint") => "фильтр по названию, Esc — сброс",
         (Lang::En, "search_hint") => "filter by title, Esc to clear",
-        (Lang::Ru, "command_hint") => "команда: demo, lang, theme, simple, vim, help, quit",
-        (Lang::En, "command_hint") => "command: demo, lang, theme, simple, vim, help, quit",
+        (Lang::Ru, "command_hint") => "команда: demo, lang, theme, simple, vim, logout, help, quit",
+        (Lang::En, "command_hint") => "command: demo, lang, theme, simple, vim, logout, help, quit",
         (Lang::Ru, "status_simple") => {
             "↑/↓ — чаты · Tab — фокус · Enter — открыть/отправить · мышь · ? — помощь · : — команды"
         }
@@ -164,6 +164,22 @@ pub fn t(lang: Lang, key: &'static str) -> &'static str {
         (Lang::En, "login_hint_password") => "Enter your cloud password",
         (Lang::Ru, "login_hint_qr") => "Открой ссылку или отсканируй QR в Telegram",
         (Lang::En, "login_hint_qr") => "Open the link or scan the QR code in Telegram",
+        (Lang::Ru, "login_qr_scan") => {
+            "Отсканируйте QR в Telegram: Настройки → Устройства → Подключить устройство"
+        }
+        (Lang::En, "login_qr_scan") => {
+            "Scan the QR code in Telegram: Settings → Devices → Link Desktop Device"
+        }
+        (Lang::Ru, "login_qr_fallback") => {
+            "Откройте ссылку в Telegram или выберите Настройки → Устройства → Подключить устройство"
+        }
+        (Lang::En, "login_qr_fallback") => {
+            "Open the link in Telegram or use Settings → Devices → Link Desktop Device"
+        }
+        (Lang::Ru, "login_qr_link") => "Или откройте ссылку:",
+        (Lang::En, "login_qr_link") => "Or open this link:",
+        (Lang::Ru, "login_qr_waiting") => "Ждём подтверждения в Telegram…",
+        (Lang::En, "login_qr_waiting") => "Waiting for confirmation in Telegram…",
         (Lang::Ru, "phone_required") => "Введите номер телефона",
         (Lang::En, "phone_required") => "Enter a phone number",
         (Lang::Ru, "code_required") => "Введите код из Telegram",
@@ -182,6 +198,24 @@ pub fn t(lang: Lang, key: &'static str) -> &'static str {
         (Lang::En, "sign_in") => "Sign in",
         (Lang::Ru, "use_qr") => "Войти по QR",
         (Lang::En, "use_qr") => "Use QR code",
+        (Lang::Ru, "logout") => "Выйти",
+        (Lang::En, "logout") => "Log out",
+        (Lang::Ru, "logout_title") => "Выйти из Telegram?",
+        (Lang::En, "logout_title") => "Log out of Telegram?",
+        (Lang::Ru, "logout_confirm_body") => {
+            "Аккаунт будет отключён, кэш чатов и сообщений очищен. TDLib удалит локальные данные."
+        }
+        (Lang::En, "logout_confirm_body") => {
+            "You will be signed out and the chat/message cache will be cleared. TDLib removes local data."
+        }
+        (Lang::Ru, "logout_confirm_hint") => "Enter или y — выйти · Esc — отмена",
+        (Lang::En, "logout_confirm_hint") => "Enter or y — log out · Esc — cancel",
+        (Lang::Ru, "logout_requested") => "Выходим из Telegram…",
+        (Lang::En, "logout_requested") => "Signing out of Telegram…",
+        (Lang::Ru, "logout_done") => "Вы вышли из Telegram",
+        (Lang::En, "logout_done") => "Signed out of Telegram",
+        (Lang::Ru, "logout_demo") => "В demo-режиме выход недоступен",
+        (Lang::En, "logout_demo") => "Logout is not available in demo mode",
         (Lang::Ru, "please_wait") => "Подождите…",
         (Lang::En, "please_wait") => "Please wait…",
         (Lang::Ru, "loading_chats") => "Загружаем чаты…",
