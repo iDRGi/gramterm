@@ -179,6 +179,30 @@ impl App {
             .unwrap_or(&[])
     }
 
+    /// Keeps the selected message in step with asynchronously loaded history.
+    /// While following the bottom the newest message stays selected; otherwise
+    /// a selection that fell out of range is pulled back to the last message.
+    fn sync_message_selection(&mut self) {
+        // Before a chat is opened (and before history arrives) there is
+        // nothing to select; leave the chat list preview untouched.
+        if self.focus != Focus::Messages && self.selected_message.is_none() {
+            return;
+        }
+        let len = self.current_messages().len();
+        let selected = if self.follow_bottom {
+            len.checked_sub(1)
+        } else {
+            match self.selected_message {
+                Some(index) if index >= len => len.checked_sub(1),
+                other => other,
+            }
+        };
+        if self.selected_message != selected {
+            self.selected_message = selected;
+            self.dirty = true;
+        }
+    }
+
     pub fn is_ready(&self) -> bool {
         self.backend.auth() == AuthView::Ready
     }
@@ -307,6 +331,7 @@ impl App {
             self.status = format!("new: {}", message.sender);
             self.dirty = true;
         }
+        self.sync_message_selection();
         let auth_after = self.backend.auth();
         if auth_before != auth_after {
             self.dirty = true;
@@ -942,5 +967,49 @@ mod tests {
         let mut app = app();
         app.execute_command("lang en");
         assert_eq!(app.lang, Lang::En);
+    }
+
+    #[test]
+    fn opening_a_chat_selects_the_last_cached_message() {
+        let mut app = app();
+        app.selected_chat = 1;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.selected_message, Some(3));
+        assert!(app.follow_bottom);
+        assert_eq!(app.message_scroll, 0);
+    }
+
+    #[test]
+    fn startup_does_not_select_a_message_before_a_chat_is_opened() {
+        let mut app = app();
+        app.on_tick();
+        assert_eq!(app.selected_message, None);
+    }
+
+    #[test]
+    fn messages_arriving_while_following_bottom_stay_selected() {
+        let mut app = app();
+        app.selected_chat = 1;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.selected_message, Some(3));
+
+        // Simulate history arriving after the chat was opened.
+        app.backend.send_text(2, "later".into());
+        app.on_tick();
+        assert_eq!(app.selected_message, Some(4));
+    }
+
+    #[test]
+    fn messages_arriving_while_scrolled_up_do_not_move_the_selection() {
+        let mut app = app();
+        app.selected_chat = 1;
+        app.on_key(key(KeyCode::Enter));
+        app.move_message(-1);
+        assert_eq!(app.selected_message, Some(2));
+        assert!(!app.follow_bottom);
+
+        app.backend.send_text(2, "later".into());
+        app.on_tick();
+        assert_eq!(app.selected_message, Some(2));
     }
 }

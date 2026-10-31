@@ -555,13 +555,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
 
     let messages = app.current_messages().to_vec();
     if messages.is_empty() {
+        let loading = app
+            .current_chat_id()
+            .is_some_and(|chat_id| app.backend.history_loading(chat_id));
+        let label = if loading {
+            i18n::t(app.lang, "loading_messages")
+        } else {
+            i18n::t(app.lang, "no_messages")
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                i18n::t(app.lang, "no_messages"),
-                Style::default().fg(theme.dim),
-            ))
-            .alignment(Alignment::Center)
-            .style(base(theme)),
+            Paragraph::new(Span::styled(label, Style::default().fg(theme.dim)))
+                .alignment(Alignment::Center)
+                .style(base(theme)),
             inner,
         );
         return;
@@ -822,4 +827,107 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         width,
         height,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{Backend, Chat, ChatId, Message};
+    use crate::i18n::Lang;
+    use crate::theme::ThemeKind;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    struct StubBackend {
+        chats: Vec<Chat>,
+        loading: bool,
+    }
+
+    impl Backend for StubBackend {
+        fn auth(&self) -> AuthView {
+            AuthView::Ready
+        }
+
+        fn submit_phone(&mut self, _phone: String) {}
+
+        fn submit_code(&mut self, _code: String) {}
+
+        fn submit_password(&mut self, _password: String) {}
+
+        fn history_loading(&self, _chat: ChatId) -> bool {
+            self.loading
+        }
+
+        fn chats(&self) -> &[Chat] {
+            &self.chats
+        }
+
+        fn messages(&self, _chat: ChatId) -> &[Message] {
+            &[]
+        }
+
+        fn send_text(&mut self, chat: ChatId, text: String) -> Message {
+            Message {
+                id: 1,
+                chat_id: chat,
+                sender: "You".into(),
+                text,
+                outgoing: true,
+                time: "now".into(),
+                pending: false,
+                edited: false,
+            }
+        }
+
+        fn mark_read(&mut self, _chat: ChatId) {}
+
+        fn tick(&mut self) -> Option<Message> {
+            None
+        }
+    }
+
+    fn make_app(loading: bool, lang: Lang) -> App {
+        let chats = vec![Chat {
+            id: 1,
+            title: "Test".into(),
+            preview: String::new(),
+            unread: 0,
+            muted: false,
+            pinned: false,
+            kind: ChatKind::Private,
+        }];
+        App::with_backend(
+            Box::new(StubBackend { chats, loading }),
+            lang,
+            ThemeKind::Mocha,
+            false,
+        )
+    }
+
+    fn render(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn shows_loading_state_while_history_is_loading() {
+        let mut app = make_app(true, Lang::En);
+        assert!(render(&mut app).contains("Loading messages…"));
+
+        let mut app = make_app(true, Lang::Ru);
+        assert!(render(&mut app).contains("Загружаем сообщения…"));
+    }
+
+    #[test]
+    fn shows_empty_state_after_history_loaded() {
+        let mut app = make_app(false, Lang::En);
+        assert!(render(&mut app).contains("No messages yet"));
+    }
 }
