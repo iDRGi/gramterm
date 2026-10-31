@@ -4,13 +4,19 @@ use std::time::Duration;
 
 use gramterm_tg::{AuthState, ChatInfo, Config, TgClient};
 
-use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message};
+use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message, MsgId, SendFailure};
+use crate::message_cache;
 
 enum Command {
     Phone(String),
     Code(String),
     Password(String),
     Qr,
+    Send {
+        chat_id: ChatId,
+        text: String,
+        temp_id: MsgId,
+    },
 }
 
 enum Event {
@@ -20,6 +26,16 @@ enum Event {
     ChatsFailed,
     Notice(String),
     Error(String),
+    Sent {
+        chat_id: ChatId,
+        temp_id: MsgId,
+        message: Message,
+    },
+    SendFailed {
+        chat_id: ChatId,
+        temp_id: MsgId,
+        error: String,
+    },
 }
 
 pub struct TgBackend {
@@ -31,6 +47,8 @@ pub struct TgBackend {
     message_cache: HashMap<ChatId, Vec<Message>>,
     history_loading: HashSet<ChatId>,
     notice: Option<String>,
+    next_temp_id: MsgId,
+    send_failure: Option<SendFailure>,
 }
 
 impl TgBackend {
@@ -53,6 +71,8 @@ impl TgBackend {
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
             notice: None,
+            next_temp_id: -1,
+            send_failure: None,
         }
     }
 
@@ -118,6 +138,64 @@ impl TgBackend {
                                     let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
+                            Ok(Command::Send {
+                                chat_id,
+                                text,
+                                temp_id,
+                            }) => {
+                                if state != AuthState::Ready {
+                                    let _ = event_tx.send(Event::SendFailed {
+                                        chat_id,
+                                        temp_id,
+                                        error: "TDLib is not ready".into(),
+                                    });
+                                } else if text.trim().is_empty() {
+                                    let _ = event_tx.send(Event::SendFailed {
+                                        chat_id,
+                                        temp_id,
+                                        error: "message is empty".into(),
+                                    });
+                                } else {
+                                    match tokio::time::timeout(
+                                        Duration::from_secs(30),
+                                        client.send_text(chat_id, &text),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(info)) => {
+                                            let message = Message {
+                                                id: info.id,
+                                                chat_id: info.chat_id,
+                                                sender: info.sender,
+                                                text: info.text,
+                                                outgoing: info.outgoing,
+                                                time: info.time,
+                                                pending: false,
+                                                edited: false,
+                                            };
+                                            let _ = event_tx.send(Event::Sent {
+                                                chat_id,
+                                                temp_id,
+                                                message,
+                                            });
+                                        }
+                                        Ok(Err(error)) => {
+                                            let _ = event_tx.send(Event::SendFailed {
+                                                chat_id,
+                                                temp_id,
+                                                error: format!("{error:#}"),
+                                            });
+                                        }
+                                        Err(_) => {
+                                            let _ = event_tx.send(Event::SendFailed {
+                                                chat_id,
+                                                temp_id,
+                                                error: "send timed out".into(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                             Ok(_) => {}
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => return,
@@ -155,6 +233,8 @@ impl TgBackend {
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
             notice: None,
+            next_temp_id: -1,
+            send_failure: None,
         }
     }
 }
@@ -212,12 +292,16 @@ impl Backend for TgBackend {
         self.notice.take()
     }
 
+    fn take_send_failure(&mut self) -> Option<SendFailure> {
+        self.send_failure.take()
+    }
+
     fn chats_loading(&self) -> bool {
         self.chats_loading
     }
 
     fn can_send(&self) -> bool {
-        false
+        self.auth == AuthView::Ready
     }
 
     fn chats(&self) -> &[Chat] {
@@ -236,20 +320,44 @@ impl Backend for TgBackend {
     }
 
     fn send_text(&mut self, chat: ChatId, text: String) -> Message {
+        let temp_id = self.next_temp_id;
+        self.next_temp_id = self.next_temp_id.wrapping_sub(1);
         let message = Message {
-            id: 0,
+            id: temp_id,
             chat_id: chat,
             sender: "You".into(),
-            text,
+            text: text.clone(),
             outgoing: true,
             time: "now".into(),
             pending: true,
             edited: false,
         };
-        self.message_cache
-            .entry(chat)
-            .or_default()
-            .push(message.clone());
+
+        if text.trim().is_empty() {
+            return message;
+        }
+        if self.auth != AuthView::Ready {
+            self.send_failure = Some(SendFailure {
+                chat_id: chat,
+                text,
+                error: "TDLib is not ready".into(),
+            });
+            return message;
+        }
+
+        message_cache::push_pending(&mut self.message_cache, message.clone());
+        if let Err(error) = self.tx.send(Command::Send {
+            chat_id: chat,
+            text,
+            temp_id,
+        }) {
+            message_cache::remove_pending(&mut self.message_cache, chat, temp_id);
+            self.send_failure = Some(SendFailure {
+                chat_id: chat,
+                text: message.text.clone(),
+                error: format!("TDLib worker is not running: {error}"),
+            });
+        }
         message
     }
 
@@ -287,6 +395,31 @@ impl Backend for TgBackend {
                 }
                 Event::Error(error) => {
                     self.auth = AuthView::Error(error);
+                }
+                Event::Sent {
+                    chat_id,
+                    temp_id,
+                    message,
+                } => {
+                    message_cache::replace_pending(
+                        &mut self.message_cache,
+                        chat_id,
+                        temp_id,
+                        message,
+                    );
+                }
+                Event::SendFailed {
+                    chat_id,
+                    temp_id,
+                    error,
+                } => {
+                    let pending =
+                        message_cache::remove_pending(&mut self.message_cache, chat_id, temp_id);
+                    self.send_failure = Some(SendFailure {
+                        chat_id,
+                        text: pending.map(|message| message.text).unwrap_or_default(),
+                        error,
+                    });
                 }
             }
         }
