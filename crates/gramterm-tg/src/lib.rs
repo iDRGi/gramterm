@@ -217,7 +217,13 @@ fn init_logging(config: &Config) -> Result<()> {
         r#"{{"@type":"setLogStream","log_stream":{{"@type":"logStreamFile","path":"{path}","max_file_size":10485760,"redirect_stderr":false}}}}"#
     );
     execute(&stream)?;
-    execute(r#"{"@type":"setLogVerbosityLevel","new_verbosity_level":1}"#)?;
+    let verbosity = std::env::var("GRAMTERM_TDLIB_LOG")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(1);
+    execute(&format!(
+        r#"{{"@type":"setLogVerbosityLevel","new_verbosity_level":{verbosity}}}"#
+    ))?;
     Ok(())
 }
 

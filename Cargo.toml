@@ -20,7 +20,7 @@ gramterm-tg = { path = "crates/gramterm-tg", optional = true }
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 textwrap = "0.16"
-tokio = { version = "1", features = ["rt", "time"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"], optional = true }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -52,7 +52,7 @@ impl TgBackend {
         let (event_tx, event_rx) = mpsc::channel();
 
         std::thread::spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
             {
