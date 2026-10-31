@@ -380,6 +380,21 @@ impl App {
             }
             self.dirty = true;
         }
+        if let Some(failure) = self.backend.take_send_failure() {
+            let restored = !failure.text.is_empty()
+                && self.current_chat_id() == Some(failure.chat_id)
+                && self.input.trim().is_empty();
+            if restored {
+                self.input = failure.text;
+            }
+            let key = if restored {
+                "send_failed_restored"
+            } else {
+                "send_failed"
+            };
+            self.status = format!("{}: {}", i18n::t(self.lang, key), failure.error);
+            self.dirty = true;
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -974,6 +989,7 @@ fn inside(rect: Rect, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{ChatKind, Message, SendFailure};
     use crossterm::event::{KeyEventKind, KeyEventState};
 
     fn app() -> App {
@@ -986,6 +1002,76 @@ mod tests {
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
+        }
+    }
+
+    struct FailingBackend {
+        chats: Vec<Chat>,
+        failure: Option<SendFailure>,
+    }
+
+    impl FailingBackend {
+        fn new() -> Self {
+            Self {
+                chats: vec![Chat {
+                    id: 1,
+                    title: "Test".into(),
+                    preview: String::new(),
+                    unread: 0,
+                    muted: false,
+                    pinned: false,
+                    kind: ChatKind::Private,
+                }],
+                failure: None,
+            }
+        }
+    }
+
+    impl Backend for FailingBackend {
+        fn auth(&self) -> AuthView {
+            AuthView::Ready
+        }
+
+        fn submit_phone(&mut self, _phone: String) {}
+
+        fn submit_code(&mut self, _code: String) {}
+
+        fn submit_password(&mut self, _password: String) {}
+
+        fn chats(&self) -> &[Chat] {
+            &self.chats
+        }
+
+        fn messages(&self, _chat: ChatId) -> &[Message] {
+            &[]
+        }
+
+        fn send_text(&mut self, chat: ChatId, text: String) -> Message {
+            self.failure = Some(SendFailure {
+                chat_id: chat,
+                text: text.clone(),
+                error: "network down".into(),
+            });
+            Message {
+                id: -1,
+                chat_id: chat,
+                sender: "You".into(),
+                text,
+                outgoing: true,
+                time: "now".into(),
+                pending: true,
+                edited: false,
+            }
+        }
+
+        fn mark_read(&mut self, _chat: ChatId) {}
+
+        fn tick(&mut self) -> Option<Message> {
+            None
+        }
+
+        fn take_send_failure(&mut self) -> Option<SendFailure> {
+            self.failure.take()
         }
     }
 
@@ -1082,5 +1168,25 @@ mod tests {
         app.backend.send_text(2, "later".into());
         app.on_tick();
         assert_eq!(app.selected_message, Some(2));
+    }
+
+    #[test]
+    fn failed_send_restores_the_composer_text() {
+        let mut app = App::with_backend(
+            Box::new(FailingBackend::new()),
+            Lang::En,
+            ThemeKind::Mocha,
+            true,
+        );
+        app.focus = Focus::Composer;
+        app.input = "hello".into();
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.input.is_empty());
+
+        app.on_tick();
+
+        assert_eq!(app.input, "hello");
+        assert!(app.status.contains("Send failed"));
+        assert!(app.status.contains("network down"));
     }
 }

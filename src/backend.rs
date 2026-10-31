@@ -34,6 +34,15 @@ pub struct Message {
     pub edited: bool,
 }
 
+/// A message that could not be sent. The backend keeps the text so the UI can
+/// restore it to the composer instead of losing the user's input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendFailure {
+    pub chat_id: ChatId,
+    pub text: String,
+    pub error: String,
+}
+
 #[allow(dead_code)] // variants are constructed by the feature-gated TDLib backend
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthView {
@@ -62,6 +71,11 @@ pub trait Backend {
     }
     fn logout(&mut self) {}
     fn take_notice(&mut self) -> Option<String> {
+        None
+    }
+    /// Drains a failed outgoing message so the UI can show an error and put the
+    /// text back into the composer.
+    fn take_send_failure(&mut self) -> Option<SendFailure> {
         None
     }
     fn chats_loading(&self) -> bool {

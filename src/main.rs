@@ -2,6 +2,8 @@ mod app;
 mod backend;
 mod demo;
 mod i18n;
+#[cfg_attr(not(feature = "tdlib"), allow(dead_code))]
+mod message_cache;
 mod qr;
 #[cfg(feature = "tdlib")]
 mod tg_backend;
