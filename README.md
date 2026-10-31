@@ -57,6 +57,10 @@ cargo run -- --demo
 - [План разработки](docs/development-plan.md)
 - [Аудит tuigram и UX-позиционирование](docs/tuigram-feature-audit.md)
 
+## Инструменты разработчика
+
+- [`tools/tg-probe`](tools/tg-probe) — отдельный TDLib-проба: логин и список чатов без TUI. Нужен, чтобы проверить бэкенд до интеграции.
+
 ## Лицензия
 
 MIT. См. [LICENSE](LICENSE).

@@ -368,6 +368,7 @@ pub trait Backend: Send + Sync {
 | Риск | Вероятность | Митигация |
 |---|---|---|
 | TDLib `tdlib-rs` не соберётся на Windows | средняя | `download-tdlib` + `static`; проверить в первую неделю |
+| TDLib runtime: libc++ / libc++abi / libunwind | высокая на Linux/WSL | Проверено: prebuilt `tdjson` требует libc++; на Ubuntu — `libc++-dev libc++abi-dev`; в WSL без root — user-space `.deb` + `LD_LIBRARY_PATH` |
 | Смена ключа TDLib DB / passcode | средняя | Исследовать API; если смена не поддерживается — задокументировать сценарий |
 | TDLib updates приходят пачками | высокая | Батчинг, bounded-канал, отбрасывание устаревших запросов |
 | Уведомления в Windows Terminal | средняя | OSC 777 + `allowOSC777`; native toast позже |
