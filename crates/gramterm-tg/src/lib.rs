@@ -4,6 +4,7 @@
 //! surface so the TUI can eventually depend on it without knowing about
 //! `tdlib-rs` details.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -277,7 +278,7 @@ impl TgClient {
 
         let futures = chats.chat_ids.into_iter().map(|chat_id| async move {
             match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30),
                 functions::get_chat(chat_id, client_id),
             )
             .await
@@ -295,19 +296,107 @@ impl TgClient {
         Ok(futures::future::join_all(futures).await)
     }
 
+    /// Tells TDLib to load this chat's history from the server. Without it
+    /// `getChatHistory` may only return the last cached message.
+    pub async fn open_chat(&self, chat_id: i64) -> Result<()> {
+        td(functions::open_chat(chat_id, self.client_id).await)?;
+        Ok(())
+    }
+
     /// Returns the newest `limit` messages in chronological order.
     pub async fn history(&self, chat_id: i64, limit: i32) -> Result<Vec<MessageInfo>> {
+        let _ = self.open_chat(chat_id).await;
+        // TDLib may answer from its database before the server page for a
+        // freshly opened chat arrives.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
         let page =
             td(functions::get_chat_history(chat_id, 0, 0, limit, false, self.client_id).await)?;
         let enums::Messages::Messages(page) = page;
-        let mut messages: Vec<MessageInfo> = page
-            .messages
-            .into_iter()
-            .flatten()
-            .map(|message| map_message(message))
-            .collect();
+        let mut raw: Vec<types::Message> = page.messages.into_iter().flatten().collect();
+
+        // For a chat opened while TDLib was still syncing, the first answer
+        // can contain only the last cached message. Retry briefly and ask for
+        // the page before that message; this also gives the server loader a
+        // chance to fill in the rest.
+        for _ in 0..2 {
+            if raw.len() > 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            if let Ok(result) =
+                functions::get_chat_history(chat_id, 0, 0, limit, false, self.client_id).await
+            {
+                let enums::Messages::Messages(page) = result;
+                raw.extend(page.messages.into_iter().flatten());
+            }
+            if raw.len() <= 1
+                && let Some(last_id) = raw.first().map(|message| message.id)
+                && let Ok(result) =
+                    functions::get_chat_history(chat_id, last_id, 0, limit, false, self.client_id)
+                        .await
+            {
+                let enums::Messages::Messages(older) = result;
+                raw.extend(older.messages.into_iter().flatten());
+            }
+        }
+
+        raw.sort_by_key(|message| message.id);
+        raw.dedup_by_key(|message| message.id);
+        if raw.len() > limit as usize {
+            raw.drain(..raw.len() - limit as usize);
+        }
+
+        let mut senders = HashMap::new();
+        let mut messages = Vec::with_capacity(raw.len());
+        for message in raw {
+            let sender = if message.is_outgoing {
+                "You".to_string()
+            } else {
+                self.sender_name(&message.sender_id, &mut senders).await
+            };
+            messages.push(map_message(message, sender));
+        }
         messages.reverse();
         Ok(messages)
+    }
+
+    async fn sender_name(
+        &self,
+        sender: &enums::MessageSender,
+        cache: &mut HashMap<String, String>,
+    ) -> String {
+        let key = match sender {
+            enums::MessageSender::User(user) => format!("u:{}", user.user_id),
+            enums::MessageSender::Chat(chat) => format!("c:{}", chat.chat_id),
+        };
+        if let Some(name) = cache.get(&key) {
+            return name.clone();
+        }
+        let name = match sender {
+            enums::MessageSender::User(user) => {
+                match functions::get_user(user.user_id, self.client_id).await {
+                    Ok(enums::User::User(user)) => {
+                        format!("{} {}", user.first_name, user.last_name)
+                            .trim()
+                            .to_string()
+                    }
+                    _ => "Unknown".to_string(),
+                }
+            }
+            enums::MessageSender::Chat(chat) => {
+                match functions::get_chat(chat.chat_id, self.client_id).await {
+                    Ok(enums::Chat::Chat(chat)) => chat.title,
+                    _ => "Unknown".to_string(),
+                }
+            }
+        };
+        let name = if name.is_empty() {
+            "Unknown".to_string()
+        } else {
+            name
+        };
+        cache.insert(key, name.clone());
+        name
     }
 
     pub async fn send_text(&self, chat_id: i64, text: &str) -> Result<MessageInfo> {
@@ -322,11 +411,11 @@ impl TgClient {
         let message =
             td(functions::send_message(chat_id, None, None, None, content, self.client_id).await)?;
         let enums::Message::Message(message) = message;
-        Ok(map_message(message))
+        Ok(map_message(message, "You".to_string()))
     }
 }
 
-fn map_message(message: types::Message) -> MessageInfo {
+fn map_message(message: types::Message, sender: String) -> MessageInfo {
     let text = match message.content {
         enums::MessageContent::MessageText(content) => content.text.text,
         enums::MessageContent::MessagePhoto(content) => content.caption.text,
@@ -335,11 +424,7 @@ fn map_message(message: types::Message) -> MessageInfo {
     MessageInfo {
         id: message.id,
         chat_id: message.chat_id,
-        sender: if message.is_outgoing {
-            "You".into()
-        } else {
-            "Them".into()
-        },
+        sender,
         text,
         outgoing: message.is_outgoing,
         time: format_time(message.date),

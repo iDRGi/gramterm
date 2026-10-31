@@ -796,6 +796,7 @@ dependencies = [
  "qrcode",
  "ratatui",
  "serde",
+ "serde_json",
  "textwrap",
  "tokio",
  "toml",

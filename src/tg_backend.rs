@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
@@ -53,6 +54,7 @@ pub struct TgBackend {
     rx: Receiver<Event>,
     auth: AuthView,
     chats: Vec<Chat>,
+    chats_cache: Option<PathBuf>,
     chats_loading: bool,
     message_cache: HashMap<ChatId, Vec<Message>>,
     history_loading: HashSet<ChatId>,
@@ -78,6 +80,7 @@ impl TgBackend {
             rx,
             auth: AuthView::Error(error),
             chats: Vec::new(),
+            chats_cache: None,
             chats_loading: false,
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
@@ -97,16 +100,21 @@ impl TgBackend {
             rx,
             auth: AuthView::Ready,
             chats: Vec::new(),
+            chats_cache: None,
             chats_loading: false,
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
             notice: None,
+            next_temp_id: -1,
+            send_failure: None,
         };
         (backend, events, commands)
     }
 
     fn start(config: Config) -> Self {
+        let chats_cache = config.data_dir.join("chats.json");
+        let cached_chats = load_chat_cache(&chats_cache);
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -310,7 +318,8 @@ impl TgBackend {
             tx: cmd_tx,
             rx: event_rx,
             auth: AuthView::Starting,
-            chats: Vec::new(),
+            chats: cached_chats,
+            chats_cache: Some(chats_cache),
             chats_loading: false,
             message_cache: HashMap::new(),
             history_loading: HashSet::new(),
@@ -394,6 +403,36 @@ fn merge_history(cache: &mut Vec<Message>, incoming: Vec<Message>) {
     *cache = merged;
 }
 
+fn load_chat_cache(path: &Path) -> Vec<Chat> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    match serde_json::from_slice::<Vec<Chat>>(&bytes) {
+        Ok(chats) => chats,
+        Err(error) => {
+            tracing::warn!("cannot read chat cache {}: {error}", path.display());
+            Vec::new()
+        }
+    }
+}
+
+fn save_chat_cache(path: &Path, chats: &[Chat]) {
+    if chats
+        .iter()
+        .any(|chat| chat.title == format!("Chat {}", chat.id))
+    {
+        return;
+    }
+    match serde_json::to_vec(chats) {
+        Ok(bytes) => {
+            if let Err(error) = std::fs::write(path, bytes) {
+                tracing::warn!("cannot write chat cache {}: {error}", path.display());
+            }
+        }
+        Err(error) => tracing::warn!("cannot serialize chat cache: {error}"),
+    }
+}
+
 fn map_auth(state: AuthState) -> AuthView {
     match state {
         AuthState::WaitPhoneNumber => AuthView::WaitPhoneNumber,
@@ -434,6 +473,9 @@ impl Backend for TgBackend {
         self.history_loaded.clear();
         self.chats_loading = false;
         self.notice = None;
+        if let Some(path) = &self.chats_cache {
+            let _ = std::fs::remove_file(path);
+        }
         if self.tx.send(Command::Logout).is_err() {
             self.auth = AuthView::Error("TDLib worker is not running".into());
         } else {
@@ -442,8 +484,15 @@ impl Backend for TgBackend {
     }
 
     fn open_chat(&mut self, chat: ChatId) {
-        if self.history_loaded.contains(&chat) || !self.history_loading.insert(chat) {
+        let sparse = self
+            .message_cache
+            .get(&chat)
+            .is_none_or(|messages| messages.len() <= 1);
+        if (!sparse && self.history_loaded.contains(&chat)) || !self.history_loading.insert(chat) {
             return;
+        }
+        if sparse {
+            self.history_loaded.remove(&chat);
         }
         tracing::debug!("requesting history for chat {chat}");
         if self.tx.send(Command::History(chat)).is_err() {
@@ -534,7 +583,12 @@ impl Backend for TgBackend {
                 }
                 Event::Chats(chats) => {
                     self.chats_loading = false;
-                    self.chats = chats
+                    let previous: HashMap<_, _> = self
+                        .chats
+                        .iter()
+                        .map(|chat| (chat.id, chat.title.clone()))
+                        .collect();
+                    let mut next: Vec<Chat> = chats
                         .into_iter()
                         .map(|chat| Chat {
                             id: chat.id,
@@ -546,6 +600,17 @@ impl Backend for TgBackend {
                             kind: ChatKind::Private,
                         })
                         .collect();
+                    for chat in &mut next {
+                        if chat.title == format!("Chat {}", chat.id)
+                            && let Some(title) = previous.get(&chat.id)
+                        {
+                            chat.title.clone_from(title);
+                        }
+                    }
+                    self.chats = next;
+                    if let Some(path) = &self.chats_cache {
+                        save_chat_cache(path, &self.chats);
+                    }
                 }
                 Event::ChatsLoading => {
                     self.chats_loading = true;

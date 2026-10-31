@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 pub type ChatId = i64;
 pub type MsgId = i64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatKind {
     Saved,
     Private,
@@ -9,7 +11,7 @@ pub enum ChatKind {
     Channel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chat {
     pub id: ChatId,
     pub title: String,
