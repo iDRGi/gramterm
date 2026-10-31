@@ -1,0 +1,175 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lang {
+    Ru,
+    En,
+}
+
+impl Default for Lang {
+    fn default() -> Self {
+        Self::detect()
+    }
+}
+
+impl Lang {
+    pub fn detect() -> Self {
+        for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+            if let Ok(value) = std::env::var(key)
+                && value.to_ascii_lowercase().starts_with("ru")
+            {
+                return Self::Ru;
+            }
+        }
+        Self::En
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "ru" | "russian" | "рус" => Some(Self::Ru),
+            "en" | "english" | "eng" => Some(Self::En),
+            _ => None,
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Ru => "ru",
+            Self::En => "en",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ru => "RU",
+            Self::En => "EN",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Ru => Self::En,
+            Self::En => Self::Ru,
+        }
+    }
+}
+
+/// Tiny Phase 0 dictionary. The real i18n layer will move to Fluent and
+/// locale files; keeping it behind `t()` means call sites will not change.
+pub fn t(lang: Lang, key: &'static str) -> &'static str {
+    match (lang, key) {
+        (Lang::Ru, "app_title") => "Gramterm — Telegram в терминале",
+        (Lang::En, "app_title") => "Gramterm — Telegram in your terminal",
+
+        (Lang::Ru, "chats") => "Чаты",
+        (Lang::En, "chats") => "Chats",
+        (Lang::Ru, "messages") => "Сообщения",
+        (Lang::En, "messages") => "Messages",
+        (Lang::Ru, "composer") => "Сообщение",
+        (Lang::En, "composer") => "Message",
+        (Lang::Ru, "type_message") => "Введите сообщение…",
+        (Lang::En, "type_message") => "Type a message…",
+        (Lang::Ru, "send") => "Отправить",
+        (Lang::En, "send") => "Send",
+        (Lang::Ru, "help") => "Помощь",
+        (Lang::En, "help") => "Help",
+        (Lang::Ru, "close") => "Закрыть",
+        (Lang::En, "close") => "Close",
+        (Lang::Ru, "demo") => "демо",
+        (Lang::En, "demo") => "demo",
+        (Lang::Ru, "simple") => "Простой",
+        (Lang::En, "simple") => "Simple",
+        (Lang::Ru, "vim") => "Vim",
+        (Lang::En, "vim") => "Vim",
+        (Lang::Ru, "quit") => "Выход",
+        (Lang::En, "quit") => "Quit",
+        (Lang::Ru, "unknown_command") => "Неизвестная команда",
+        (Lang::En, "unknown_command") => "Unknown command",
+        (Lang::Ru, "sent") => "Отправлено",
+        (Lang::En, "sent") => "Sent",
+        (Lang::Ru, "no_chats") => "Нет чатов",
+        (Lang::En, "no_chats") => "No chats",
+        (Lang::Ru, "no_messages") => "Пока нет сообщений",
+        (Lang::En, "no_messages") => "No messages yet",
+        (Lang::Ru, "saved") => "Избранное",
+        (Lang::En, "saved") => "Saved",
+        (Lang::Ru, "private") => "Личный",
+        (Lang::En, "private") => "Private",
+        (Lang::Ru, "group") => "Группа",
+        (Lang::En, "group") => "Group",
+        (Lang::Ru, "channel") => "Канал",
+        (Lang::En, "channel") => "Channel",
+        (Lang::Ru, "you") => "Вы",
+        (Lang::En, "you") => "You",
+        (Lang::Ru, "now") => "сейчас",
+        (Lang::En, "now") => "now",
+        (Lang::Ru, "typing") => "печатает…",
+        (Lang::En, "typing") => "typing…",
+        (Lang::Ru, "mouse_on") => "мышь захвачена",
+        (Lang::En, "mouse_on") => "mouse captured",
+        (Lang::Ru, "mouse_off") => "мышь отпущена",
+        (Lang::En, "mouse_off") => "mouse released",
+        (Lang::Ru, "search") => "Поиск",
+        (Lang::En, "search") => "Search",
+        (Lang::Ru, "search_hint") => "фильтр по названию, Esc — сброс",
+        (Lang::En, "search_hint") => "filter by title, Esc to clear",
+        (Lang::Ru, "command_hint") => "команда: demo, lang, theme, simple, vim, help, quit",
+        (Lang::En, "command_hint") => "command: demo, lang, theme, simple, vim, help, quit",
+        (Lang::Ru, "status_simple") => {
+            "↑/↓ — чаты · Tab — фокус · Enter — открыть/отправить · мышь · ? — помощь · : — команды"
+        }
+        (Lang::En, "status_simple") => {
+            "↑/↓ chats · Tab focus · Enter open/send · mouse · ? help · : commands"
+        }
+        (Lang::Ru, "status_vim") => {
+            "j/k — движение · h/l — фокус · i — ввод · Esc — назад · ? — помощь · : — команды"
+        }
+        (Lang::En, "status_vim") => {
+            "j/k move · h/l focus · i insert · Esc back · ? help · : commands"
+        }
+        (Lang::Ru, "help_body") => {
+            "↑/↓ или j/k — двигаться\n\
+             Tab / Shift+Tab — менять фокус\n\
+             Enter — открыть чат или отправить\n\
+             i — писать\n\
+             Esc — назад / закрыть\n\
+             / — поиск по чатам\n\
+             : — команда\n\
+             F2 — отпустить мышь для выделения\n\
+             ? — эта справка\n\
+             q — выход"
+        }
+        (Lang::En, "help_body") => {
+            "↑/↓ or j/k — move\n\
+             Tab / Shift+Tab — change focus\n\
+             Enter — open chat or send\n\
+             i — write\n\
+             Esc — back / close\n\
+             / — search chats\n\
+             : — command\n\
+             F2 — release mouse for text selection\n\
+             ? — this help\n\
+             q — quit"
+        }
+        _ => key,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_parsing() {
+        assert_eq!(Lang::parse("ru"), Some(Lang::Ru));
+        assert_eq!(Lang::parse("EN"), Some(Lang::En));
+        assert_eq!(Lang::parse("de"), None);
+    }
+
+    #[test]
+    fn russian_and_english_differ() {
+        assert_ne!(t(Lang::Ru, "chats"), t(Lang::En, "chats"));
+        assert_eq!(t(Lang::Ru, "chats"), "Чаты");
+    }
+}

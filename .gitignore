@@ -1,0 +1,7 @@
+/target
+/.research
+/smoke
+*.log
+.env
+.idea/
+.vscode/
