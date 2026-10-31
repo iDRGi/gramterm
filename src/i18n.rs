@@ -128,6 +128,42 @@ pub fn t(lang: Lang, key: &'static str) -> &'static str {
         (Lang::En, "status_vim") => {
             "j/k move · h/l focus · i insert · Esc back · ? help · : commands"
         }
+        (Lang::Ru, "not_wired") => "Отправка ещё не подключена к TDLib",
+        (Lang::En, "not_wired") => "Sending is not wired to TDLib yet",
+        (Lang::Ru, "connected") => "Подключено",
+        (Lang::En, "connected") => "Connected",
+        (Lang::Ru, "phone_submitted") => "Телефон отправлен, ждём код",
+        (Lang::En, "phone_submitted") => "Phone submitted, waiting for the code",
+        (Lang::Ru, "code_submitted") => "Код отправлен",
+        (Lang::En, "code_submitted") => "Code submitted",
+        (Lang::Ru, "password_submitted") => "Пароль отправлен",
+        (Lang::En, "password_submitted") => "Password submitted",
+        (Lang::Ru, "login_title") => "Вход в Telegram",
+        (Lang::En, "login_title") => "Sign in to Telegram",
+        (Lang::Ru, "login_starting") => "Подключаемся к Telegram…",
+        (Lang::En, "login_starting") => "Connecting to Telegram…",
+        (Lang::Ru, "login_phone") => "Номер телефона",
+        (Lang::En, "login_phone") => "Phone number",
+        (Lang::Ru, "login_code") => "Код из Telegram",
+        (Lang::En, "login_code") => "Login code",
+        (Lang::Ru, "login_password") => "Пароль 2FA",
+        (Lang::En, "login_password") => "2FA password",
+        (Lang::Ru, "login_qr") => "Вход по QR",
+        (Lang::En, "login_qr") => "QR login",
+        (Lang::Ru, "login_closed") => "TDLib закрыт",
+        (Lang::En, "login_closed") => "TDLib closed",
+        (Lang::Ru, "login_error") => "Ошибка входа",
+        (Lang::En, "login_error") => "Login error",
+        (Lang::Ru, "login_hint_phone") => "Введите номер в международном формате и нажмите Enter",
+        (Lang::En, "login_hint_phone") => {
+            "Enter the number in international format and press Enter"
+        }
+        (Lang::Ru, "login_hint_code") => "Введите код из сообщения Telegram",
+        (Lang::En, "login_hint_code") => "Enter the code from Telegram",
+        (Lang::Ru, "login_hint_password") => "Введите облачный пароль",
+        (Lang::En, "login_hint_password") => "Enter your cloud password",
+        (Lang::Ru, "login_hint_qr") => "Открой ссылку или отсканируй QR в Telegram",
+        (Lang::En, "login_hint_qr") => "Open the link or scan the QR code in Telegram",
         (Lang::Ru, "help_body") => {
             "↑/↓ или j/k — двигаться\n\
              Tab / Shift+Tab — менять фокус\n\

@@ -34,9 +34,30 @@ pub struct Message {
     pub edited: bool,
 }
 
+#[allow(dead_code)] // variants are constructed by the feature-gated TDLib backend
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthView {
+    Starting,
+    WaitPhoneNumber,
+    WaitCode,
+    WaitPassword { hint: String },
+    WaitOtherDevice { link: String },
+    Ready,
+    Closed,
+    Error(String),
+}
+
 /// The narrow surface the UI needs. The TDLib adapter will implement this
 /// with channels and async commands; the demo backend is synchronous.
 pub trait Backend {
+    fn auth(&self) -> AuthView;
+    fn submit_phone(&mut self, phone: String);
+    fn submit_code(&mut self, code: String);
+    fn submit_password(&mut self, password: String);
+    fn can_send(&self) -> bool {
+        true
+    }
+
     fn chats(&self) -> &[Chat];
     fn messages(&self, chat: ChatId) -> &[Message];
     fn send_text(&mut self, chat: ChatId, text: String) -> Message;

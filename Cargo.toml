@@ -9,12 +9,18 @@ readme = "README.md"
 keywords = ["telegram", "tui", "terminal", "tdlib", "chat"]
 categories = ["command-line-utilities"]
 
+[features]
+default = []
+tdlib = ["dep:gramterm-tg", "dep:tokio"]
+
 [dependencies]
 anyhow = "1"
 crossterm = "0.29"
+gramterm-tg = { path = "crates/gramterm-tg", optional = true }
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 textwrap = "0.16"
+tokio = { version = "1", features = ["rt", "time"], optional = true }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

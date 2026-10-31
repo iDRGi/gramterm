@@ -4,12 +4,14 @@
 
 Gramterm — TUI-клиент Telegram на Rust. Цели: низкий порог входа, Simple-режим по умолчанию, мышь, русский язык, passcode и приватность без компромиссов.
 
-> **Статус:** Phase 0 — каркас TUI и demo-режим; TDLib-примитивы собираются в `gramterm-tg`, но ещё не подключены к TUI.
+> **Статус:** Phase 1 в работе — demo-TUI готов, TDLib-логин и список чатов подключены через `--features tdlib`. История и отправка сообщений ещё не подключены.
 
-## Возможности Phase 0
+## Текущие возможности
 
 - двухпанельный интерфейс: чаты, история, композер, статус-бар;
 - demo-режим с фейковыми чатами и сообщениями;
+- TDLib-логин: телефон, код, 2FA, QR-ссылка;
+- после логина — реальный список чатов (заголовки);
 - Simple-режим: стрелки, Tab, Enter, мышь;
 - Vim-режим: `hjkl`, `i`, `Esc` (переключается командой `:vim` / `:simple`);
 - клики по чатам, колесо мыши, фокус композера;
@@ -30,10 +32,22 @@ cargo run -- --demo
 
 ```text
 --demo            demo-режим без Telegram
+--tdlib           подключиться через TDLib (нужно собрать с --features tdlib)
 --lang ru|en      язык интерфейса
 --theme mocha|latte
 --no-mouse        не захватывать мышь
 ```
+
+### TDLib (experimental)
+
+```bash
+cargo build --features tdlib
+TG_API_ID=123456 TG_API_HASH=... cargo run --features tdlib -- --tdlib
+```
+
+На Linux prebuilt TDLib требует `libc++`, `libc++abi`, `libunwind`; на Ubuntu
+это `libc++-dev libc++abi-dev`. Для входа нужен телефон, код и, если включён,
+пароль 2FA.
 
 ## Клавиши
 

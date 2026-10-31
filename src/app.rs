@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::backend::{Backend, Chat, ChatId};
+use crate::backend::{AuthView, Backend, Chat, ChatId};
 use crate::demo::DemoBackend;
 use crate::i18n::{self, Lang};
 use crate::theme::{Theme, ThemeKind};
@@ -62,7 +62,7 @@ pub enum Hit {
 }
 
 pub struct App {
-    pub backend: DemoBackend,
+    pub backend: Box<dyn Backend>,
     pub lang: Lang,
     pub theme_kind: ThemeKind,
     pub theme: Theme,
@@ -73,6 +73,7 @@ pub struct App {
     pub chat_scroll: usize,
     pub message_scroll: u16,
     pub input: String,
+    pub login_input: String,
     pub command: String,
     pub search: String,
     pub popup: Popup,
@@ -89,8 +90,22 @@ pub struct App {
 
 impl App {
     pub fn new(lang: Lang, theme_kind: ThemeKind, mouse_enabled: bool) -> Self {
+        Self::with_backend(
+            Box::new(DemoBackend::new()),
+            lang,
+            theme_kind,
+            mouse_enabled,
+        )
+    }
+
+    pub fn with_backend(
+        backend: Box<dyn Backend>,
+        lang: Lang,
+        theme_kind: ThemeKind,
+        mouse_enabled: bool,
+    ) -> Self {
         Self {
-            backend: DemoBackend::new(),
+            backend,
             lang,
             theme_kind,
             theme: Theme::new(theme_kind),
@@ -101,6 +116,7 @@ impl App {
             chat_scroll: 0,
             message_scroll: 0,
             input: String::new(),
+            login_input: String::new(),
             command: String::new(),
             search: String::new(),
             popup: Popup::None,
@@ -130,6 +146,10 @@ impl App {
             .unwrap_or(&[])
     }
 
+    pub fn is_ready(&self) -> bool {
+        self.backend.auth() == AuthView::Ready
+    }
+
     pub fn visible_chat_indices(&self) -> Vec<usize> {
         let needle = self.search.trim().to_lowercase();
         self.backend
@@ -156,6 +176,11 @@ impl App {
     }
 
     pub fn send(&mut self) {
+        if !self.backend.can_send() {
+            self.status = i18n::t(self.lang, "not_wired").to_string();
+            self.dirty = true;
+            return;
+        }
         let Some(chat_id) = self.current_chat_id() else {
             return;
         };
@@ -240,12 +265,21 @@ impl App {
 
     pub fn on_tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        let auth_before = self.backend.auth();
         if let Some(message) = self.backend.tick() {
             if self.current_chat_id() == Some(message.chat_id) && self.follow_bottom {
                 self.selected_message = self.current_messages().len().checked_sub(1);
             }
             self.status = format!("new: {}", message.sender);
             self.dirty = true;
+        }
+        let auth_after = self.backend.auth();
+        if auth_before != auth_after {
+            self.dirty = true;
+            if auth_after == AuthView::Ready {
+                self.focus = Focus::Chats;
+                self.status = i18n::t(self.lang, "connected").to_string();
+            }
         }
     }
 
@@ -267,6 +301,11 @@ impl App {
         {
             let kind = self.theme_kind.toggled();
             self.set_theme(kind);
+            return;
+        }
+
+        if self.backend.auth() != AuthView::Ready {
+            self.on_login_key(key);
             return;
         }
 
@@ -444,6 +483,51 @@ impl App {
         }
     }
 
+    fn on_login_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.login_input.clear();
+                self.dirty = true;
+            }
+            KeyCode::Backspace => {
+                self.login_input.pop();
+                self.dirty = true;
+            }
+            KeyCode::Enter => self.submit_login(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.login_input.push(c);
+                self.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_login(&mut self) {
+        let value = self.login_input.trim().to_string();
+        if value.is_empty() {
+            return;
+        }
+        match self.backend.auth() {
+            AuthView::WaitPhoneNumber => {
+                self.backend.submit_phone(value);
+                self.login_input.clear();
+                self.status = i18n::t(self.lang, "phone_submitted").to_string();
+            }
+            AuthView::WaitCode => {
+                self.backend.submit_code(value);
+                self.login_input.clear();
+                self.status = i18n::t(self.lang, "code_submitted").to_string();
+            }
+            AuthView::WaitPassword { .. } => {
+                self.backend.submit_password(value);
+                self.login_input.clear();
+                self.status = i18n::t(self.lang, "password_submitted").to_string();
+            }
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
     fn on_command_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -556,6 +640,9 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.backend.auth() != AuthView::Ready {
+            return;
+        }
         if self.popup != Popup::None {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 self.popup = Popup::None;

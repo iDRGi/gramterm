@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Focus, Hit, Mode, Popup};
-use crate::backend::{Backend, ChatKind};
+use crate::backend::{AuthView, ChatKind};
 use crate::i18n;
 use crate::theme::Theme;
 
@@ -19,6 +19,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         area,
     );
     app.hits.clear();
+
+    if !app.is_ready() {
+        draw_login(frame, app, area, theme);
+        return;
+    }
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -52,6 +57,143 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn base(theme: Theme) -> Style {
     Style::default().fg(theme.fg).bg(theme.bg)
+}
+
+fn draw_login(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    let popup = centered_rect(64, 52, area);
+    frame.render_widget(Clear, popup);
+
+    let auth = app.backend.auth();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            " Gramterm ",
+            Style::default()
+                .fg(theme.bg)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            i18n::t(app.lang, "login_title"),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    match auth {
+        AuthView::Starting => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_starting"),
+                Style::default().fg(theme.dim),
+            )));
+        }
+        AuthView::WaitPhoneNumber => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_phone"),
+                Style::default().fg(theme.accent),
+            )));
+            lines.push(Line::from(format!("> {}▌", app.login_input)));
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_hint_phone"),
+                Style::default().fg(theme.dim),
+            )));
+        }
+        AuthView::WaitCode => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_code"),
+                Style::default().fg(theme.accent),
+            )));
+            lines.push(Line::from(format!("> {}▌", app.login_input)));
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_hint_code"),
+                Style::default().fg(theme.dim),
+            )));
+        }
+        AuthView::WaitPassword { hint } => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_password"),
+                Style::default().fg(theme.accent),
+            )));
+            let masked = "•".repeat(app.login_input.chars().count());
+            lines.push(Line::from(format!("> {masked}▌")));
+            if !hint.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("hint: {hint}"),
+                    Style::default().fg(theme.warning),
+                )));
+            }
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_hint_password"),
+                Style::default().fg(theme.dim),
+            )));
+        }
+        AuthView::WaitOtherDevice { link } => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_qr"),
+                Style::default().fg(theme.accent),
+            )));
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_hint_qr"),
+                Style::default().fg(theme.dim),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                link,
+                Style::default().fg(theme.fg),
+            )));
+        }
+        AuthView::Ready => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "connected"),
+                Style::default().fg(theme.success),
+            )));
+        }
+        AuthView::Closed => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_closed"),
+                Style::default().fg(theme.error),
+            )));
+        }
+        AuthView::Error(message) => {
+            lines.push(Line::from(Span::styled(
+                i18n::t(app.lang, "login_error"),
+                Style::default().fg(theme.error),
+            )));
+            lines.push(Line::from(Span::styled(
+                message,
+                Style::default().fg(theme.error),
+            )));
+        }
+    }
+
+    if !app.status.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            app.status.clone(),
+            Style::default().fg(theme.dim),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Ctrl+C — exit",
+        Style::default().fg(theme.dim),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" {} ", i18n::t(app.lang, "app_title")),
+            Style::default().fg(theme.accent),
+        ))
+        .style(base(theme));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(base(theme))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {

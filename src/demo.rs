@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::backend::{Backend, Chat, ChatId, ChatKind, Message, MsgId};
+use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message, MsgId};
 
 #[derive(Debug)]
 pub struct DemoBackend {
@@ -226,6 +226,16 @@ impl Default for DemoBackend {
 }
 
 impl Backend for DemoBackend {
+    fn auth(&self) -> AuthView {
+        AuthView::Ready
+    }
+
+    fn submit_phone(&mut self, _phone: String) {}
+
+    fn submit_code(&mut self, _code: String) {}
+
+    fn submit_password(&mut self, _password: String) {}
+
     fn chats(&self) -> &[Chat] {
         &self.chats
     }

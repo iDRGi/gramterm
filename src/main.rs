@@ -2,6 +2,8 @@ mod app;
 mod backend;
 mod demo;
 mod i18n;
+#[cfg(feature = "tdlib")]
+mod tg_backend;
 mod theme;
 mod ui;
 
@@ -21,6 +23,7 @@ use crate::theme::ThemeKind;
 
 struct Options {
     demo: bool,
+    tdlib: bool,
     lang: Lang,
     theme: ThemeKind,
     mouse: bool,
@@ -53,11 +56,28 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal, options: Options) -> Result<()> {
-    let mut app = App::new(options.lang, options.theme, options.mouse);
-    app.demo = options.demo;
-    if !options.demo {
-        app.status = "TDLib backend is not wired yet — demo mode".into();
+    if options.demo && options.tdlib {
+        anyhow::bail!("choose --demo or --tdlib, not both");
     }
+
+    let mut app = if options.tdlib {
+        #[cfg(feature = "tdlib")]
+        {
+            App::with_backend(
+                Box::new(tg_backend::TgBackend::from_env()),
+                options.lang,
+                options.theme,
+                options.mouse,
+            )
+        }
+        #[cfg(not(feature = "tdlib"))]
+        {
+            anyhow::bail!("TDLib support is not built; rebuild with --features tdlib")
+        }
+    } else {
+        App::new(options.lang, options.theme, options.mouse)
+    };
+    app.demo = !options.tdlib;
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
@@ -91,7 +111,8 @@ fn run(terminal: &mut DefaultTerminal, options: Options) -> Result<()> {
 
 fn parse_args() -> Result<Options> {
     let mut options = Options {
-        demo: false,
+        demo: true,
+        tdlib: false,
         lang: Lang::detect(),
         theme: ThemeKind::Mocha,
         mouse: true,
@@ -100,7 +121,14 @@ fn parse_args() -> Result<Options> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--demo" => options.demo = true,
+            "--demo" => {
+                options.demo = true;
+                options.tdlib = false;
+            }
+            "--tdlib" => {
+                options.tdlib = true;
+                options.demo = false;
+            }
             "--no-mouse" => options.mouse = false,
             "--lang" => {
                 let value = args.next().context("--lang needs ru or en")?;
@@ -139,6 +167,7 @@ Usage:
 
 Options:
   --demo            run with demo data, no Telegram account
+  --tdlib           connect through TDLib (needs --features tdlib)
   --lang ru|en      interface language
   --theme mocha|latte
   --no-mouse        do not capture the mouse
