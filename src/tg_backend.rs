@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
@@ -27,6 +28,8 @@ pub struct TgBackend {
     auth: AuthView,
     chats: Vec<Chat>,
     chats_loading: bool,
+    message_cache: HashMap<ChatId, Vec<Message>>,
+    history_loading: HashSet<ChatId>,
     notice: Option<String>,
 }
 
@@ -47,6 +50,8 @@ impl TgBackend {
             auth: AuthView::Error(error),
             chats: Vec::new(),
             chats_loading: false,
+            message_cache: HashMap::new(),
+            history_loading: HashSet::new(),
             notice: None,
         }
     }
@@ -147,6 +152,8 @@ impl TgBackend {
             auth: AuthView::Starting,
             chats: Vec::new(),
             chats_loading: false,
+            message_cache: HashMap::new(),
+            history_loading: HashSet::new(),
             notice: None,
         }
     }
@@ -217,12 +224,19 @@ impl Backend for TgBackend {
         &self.chats
     }
 
-    fn messages(&self, _chat: ChatId) -> &[Message] {
-        &[]
+    fn history_loading(&self, chat: ChatId) -> bool {
+        self.history_loading.contains(&chat)
+    }
+
+    fn messages(&self, chat: ChatId) -> &[Message] {
+        self.message_cache
+            .get(&chat)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     fn send_text(&mut self, chat: ChatId, text: String) -> Message {
-        Message {
+        let message = Message {
             id: 0,
             chat_id: chat,
             sender: "You".into(),
@@ -231,7 +245,12 @@ impl Backend for TgBackend {
             time: "now".into(),
             pending: true,
             edited: false,
-        }
+        };
+        self.message_cache
+            .entry(chat)
+            .or_default()
+            .push(message.clone());
+        message
     }
 
     fn mark_read(&mut self, _chat: ChatId) {}

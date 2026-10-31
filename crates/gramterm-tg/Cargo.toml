@@ -7,6 +7,7 @@ description = "TDLib-backed Telegram client primitives for Gramterm"
 
 [dependencies]
 anyhow = "1"
+chrono = "0.4"
 futures = "0.3"
 tdlib-rs = { version = "1.4.0", features = ["download-tdlib", "static"] }
 tokio = { version = "1", features = ["sync", "time"] }
