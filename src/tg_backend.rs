@@ -431,6 +431,7 @@ impl Backend for TgBackend {
         self.chats.clear();
         self.message_cache.clear();
         self.history_loading.clear();
+        self.history_loaded.clear();
         self.chats_loading = false;
         self.notice = None;
         if self.tx.send(Command::Logout).is_err() {
