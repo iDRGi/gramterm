@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use tdlib_rs::enums::{self, Update};
 use tdlib_rs::functions;
+use tdlib_rs::types;
 use tokio::sync::mpsc;
 
 const APPLICATION_NAME: &str = "Gramterm";
@@ -59,6 +60,16 @@ pub struct UserInfo {
 pub struct ChatInfo {
     pub id: i64,
     pub title: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageInfo {
+    pub id: i64,
+    pub chat_id: i64,
+    pub sender: String,
+    pub text: String,
+    pub outgoing: bool,
+    pub time: String,
 }
 
 pub struct TgClient {
@@ -234,6 +245,62 @@ impl TgClient {
         });
         Ok(futures::future::join_all(futures).await)
     }
+
+    /// Returns the newest `limit` messages in chronological order.
+    pub async fn history(&self, chat_id: i64, limit: i32) -> Result<Vec<MessageInfo>> {
+        let page =
+            td(functions::get_chat_history(chat_id, 0, 0, limit, false, self.client_id).await)?;
+        let enums::Messages::Messages(page) = page;
+        let mut messages: Vec<MessageInfo> = page
+            .messages
+            .into_iter()
+            .flatten()
+            .map(|message| map_message(message))
+            .collect();
+        messages.reverse();
+        Ok(messages)
+    }
+
+    pub async fn send_text(&self, chat_id: i64, text: &str) -> Result<MessageInfo> {
+        let content = enums::InputMessageContent::InputMessageText(types::InputMessageText {
+            text: types::FormattedText {
+                text: text.to_string(),
+                entities: Vec::new(),
+            },
+            link_preview_options: None,
+            clear_draft: true,
+        });
+        let message =
+            td(functions::send_message(chat_id, None, None, None, content, self.client_id).await)?;
+        let enums::Message::Message(message) = message;
+        Ok(map_message(message))
+    }
+}
+
+fn map_message(message: types::Message) -> MessageInfo {
+    let text = match message.content {
+        enums::MessageContent::MessageText(content) => content.text.text,
+        enums::MessageContent::MessagePhoto(content) => content.caption.text,
+        _ => String::new(),
+    };
+    MessageInfo {
+        id: message.id,
+        chat_id: message.chat_id,
+        sender: if message.is_outgoing {
+            "You".into()
+        } else {
+            "Them".into()
+        },
+        text,
+        outgoing: message.is_outgoing,
+        time: format_time(message.date),
+    }
+}
+
+fn format_time(date: i32) -> String {
+    chrono::DateTime::from_timestamp(i64::from(date), 0)
+        .map(|time| time.format("%H:%M").to_string())
+        .unwrap_or_default()
 }
 
 fn map_auth(state: enums::AuthorizationState) -> AuthState {

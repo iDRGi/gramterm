@@ -55,6 +55,13 @@ pub trait Backend {
     fn submit_code(&mut self, code: String);
     fn submit_password(&mut self, password: String);
     fn request_qr(&mut self) {}
+    fn open_chat(&mut self, _chat: ChatId) {}
+    #[allow(dead_code)]
+    fn history_loading(&self, _chat: ChatId) -> bool {
+        false
+    }
+    #[allow(dead_code)]
+    fn logout(&mut self) {}
     fn take_notice(&mut self) -> Option<String> {
         None
     }

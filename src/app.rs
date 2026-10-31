@@ -200,6 +200,7 @@ impl App {
         };
         let id = chat.id;
         self.backend.mark_read(id);
+        self.backend.open_chat(id);
         self.focus = Focus::Messages;
         self.selected_message = self.current_messages().len().checked_sub(1);
         self.message_scroll = 0;
