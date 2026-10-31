@@ -54,6 +54,10 @@ pub trait Backend {
     fn submit_phone(&mut self, phone: String);
     fn submit_code(&mut self, code: String);
     fn submit_password(&mut self, password: String);
+    fn request_qr(&mut self) {}
+    fn take_notice(&mut self) -> Option<String> {
+        None
+    }
     fn can_send(&self) -> bool {
         true
     }

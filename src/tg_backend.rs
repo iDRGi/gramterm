@@ -9,11 +9,13 @@ enum Command {
     Phone(String),
     Code(String),
     Password(String),
+    Qr,
 }
 
 enum Event {
     Auth(AuthView),
     Chats(Vec<ChatInfo>),
+    Notice(String),
     Error(String),
 }
 
@@ -22,6 +24,7 @@ pub struct TgBackend {
     rx: Receiver<Event>,
     auth: AuthView,
     chats: Vec<Chat>,
+    notice: Option<String>,
 }
 
 impl TgBackend {
@@ -40,6 +43,7 @@ impl TgBackend {
             rx,
             auth: AuthView::Error(error),
             chats: Vec::new(),
+            notice: None,
         }
     }
 
@@ -79,17 +83,22 @@ impl TgBackend {
                         match cmd_rx.try_recv() {
                             Ok(Command::Phone(phone)) => {
                                 if let Err(error) = client.submit_phone(&phone).await {
-                                    let _ = event_tx.send(Event::Error(format!("{error:#}")));
+                                    let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
                             Ok(Command::Code(code)) => {
                                 if let Err(error) = client.submit_code(&code).await {
-                                    let _ = event_tx.send(Event::Error(format!("{error:#}")));
+                                    let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
                             Ok(Command::Password(password)) => {
                                 if let Err(error) = client.submit_password(&password).await {
-                                    let _ = event_tx.send(Event::Error(format!("{error:#}")));
+                                    let _ = event_tx.send(Event::Notice(format!("{error:#}")));
+                                }
+                            }
+                            Ok(Command::Qr) => {
+                                if let Err(error) = client.request_qr().await {
+                                    let _ = event_tx.send(Event::Notice(format!("{error:#}")));
                                 }
                             }
                             Err(TryRecvError::Empty) => break,
@@ -124,6 +133,7 @@ impl TgBackend {
             rx: event_rx,
             auth: AuthView::Starting,
             chats: Vec::new(),
+            notice: None,
         }
     }
 }
@@ -134,7 +144,7 @@ async fn publish_ready(client: &TgClient, events: &Sender<Event>) {
             let _ = events.send(Event::Chats(chats));
         }
         Err(error) => {
-            let _ = events.send(Event::Error(format!("{error:#}")));
+            let _ = events.send(Event::Notice(format!("{error:#}")));
         }
     }
 }
@@ -166,6 +176,14 @@ impl Backend for TgBackend {
 
     fn submit_password(&mut self, password: String) {
         let _ = self.tx.send(Command::Password(password));
+    }
+
+    fn request_qr(&mut self) {
+        let _ = self.tx.send(Command::Qr);
+    }
+
+    fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     fn can_send(&self) -> bool {
@@ -214,6 +232,9 @@ impl Backend for TgBackend {
                             kind: ChatKind::Private,
                         })
                         .collect();
+                }
+                Event::Notice(notice) => {
+                    self.notice = Some(notice);
                 }
                 Event::Error(error) => {
                     self.auth = AuthView::Error(error);

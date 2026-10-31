@@ -4,6 +4,8 @@
 //! surface so the TUI can eventually depend on it without knowing about
 //! `tdlib-rs` details.
 
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -12,6 +14,10 @@ use tdlib_rs::functions;
 use tokio::sync::mpsc;
 
 const APPLICATION_NAME: &str = "Gramterm";
+
+unsafe extern "C" {
+    fn td_execute(request: *const c_char) -> *const c_char;
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -73,6 +79,7 @@ impl TgClient {
     /// `waitTdlibParameters` internally.
     pub async fn connect(config: Config) -> Result<(Self, AuthState)> {
         config.prepare()?;
+        init_logging(&config)?;
         let client_id = tdlib_rs::create_client();
         let (tx, updates) = mpsc::unbounded_channel();
         std::thread::spawn(move || {
@@ -163,6 +170,11 @@ impl TgClient {
         Ok(())
     }
 
+    pub async fn request_qr(&self) -> Result<()> {
+        td(functions::request_qr_code_authentication(Vec::new(), self.client_id).await)?;
+        Ok(())
+    }
+
     pub async fn me(&self) -> Result<UserInfo> {
         let user = td(functions::get_me(self.client_id).await)?;
         let enums::User::User(user) = user;
@@ -193,6 +205,30 @@ impl TgClient {
         }
         Ok(out)
     }
+}
+
+fn init_logging(config: &Config) -> Result<()> {
+    let path = config
+        .data_dir
+        .join("tdlib.log")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let stream = format!(
+        r#"{{"@type":"setLogStream","log_stream":{{"@type":"logStreamFile","path":"{path}","max_file_size":10485760,"redirect_stderr":false}}}}"#
+    );
+    execute(&stream)?;
+    execute(r#"{"@type":"setLogVerbosityLevel","new_verbosity_level":1}"#)?;
+    Ok(())
+}
+
+fn execute(request: &str) -> Result<String> {
+    let request = CString::new(request).context("TDLib request contains NUL")?;
+    let response = unsafe { td_execute(request.as_ptr()) };
+    if response.is_null() {
+        return Ok(String::new());
+    }
+    let response = unsafe { CStr::from_ptr(response) };
+    Ok(response.to_string_lossy().into_owned())
 }
 
 fn map_auth(state: enums::AuthorizationState) -> AuthState {

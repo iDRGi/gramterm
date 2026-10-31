@@ -59,6 +59,27 @@ pub enum Hit {
     Chat(usize),
     Message(usize),
     Composer,
+    Login(LoginHit),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginHit {
+    Phone,
+    Code,
+    Password,
+    Submit,
+    ShowPassword,
+    Qr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginFocus {
+    Phone,
+    Code,
+    Password,
+    Submit,
+    ShowPassword,
+    Qr,
 }
 
 pub struct App {
@@ -73,7 +94,12 @@ pub struct App {
     pub chat_scroll: usize,
     pub message_scroll: u16,
     pub input: String,
-    pub login_input: String,
+    pub login_phone: String,
+    pub login_code: String,
+    pub login_password: String,
+    pub login_focus: LoginFocus,
+    pub login_error: Option<String>,
+    pub login_show_password: bool,
     pub command: String,
     pub search: String,
     pub popup: Popup,
@@ -116,7 +142,12 @@ impl App {
             chat_scroll: 0,
             message_scroll: 0,
             input: String::new(),
-            login_input: String::new(),
+            login_phone: String::new(),
+            login_code: String::new(),
+            login_password: String::new(),
+            login_focus: LoginFocus::Phone,
+            login_error: None,
+            login_show_password: false,
             command: String::new(),
             search: String::new(),
             popup: Popup::None,
@@ -276,10 +307,32 @@ impl App {
         let auth_after = self.backend.auth();
         if auth_before != auth_after {
             self.dirty = true;
-            if auth_after == AuthView::Ready {
-                self.focus = Focus::Chats;
-                self.status = i18n::t(self.lang, "connected").to_string();
+            match &auth_after {
+                AuthView::WaitPhoneNumber => self.login_focus = LoginFocus::Phone,
+                AuthView::WaitCode => {
+                    self.login_focus = LoginFocus::Code;
+                    self.login_error = None;
+                }
+                AuthView::WaitPassword { .. } => {
+                    self.login_focus = LoginFocus::Password;
+                    self.login_error = None;
+                }
+                AuthView::WaitOtherDevice { .. } => self.login_focus = LoginFocus::Qr,
+                AuthView::Error(message) => self.login_error = Some(message.clone()),
+                AuthView::Ready => {
+                    self.focus = Focus::Chats;
+                    self.status = i18n::t(self.lang, "connected").to_string();
+                }
+                AuthView::Starting | AuthView::Closed => {}
             }
+        }
+        if let Some(notice) = self.backend.take_notice() {
+            if self.is_ready() {
+                self.status = notice;
+            } else {
+                self.login_error = Some(notice);
+            }
+            self.dirty = true;
         }
     }
 
@@ -485,42 +538,125 @@ impl App {
 
     fn on_login_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Tab => self.cycle_login_focus(true),
+            KeyCode::BackTab => self.cycle_login_focus(false),
             KeyCode::Esc => {
-                self.login_input.clear();
+                self.login_error = None;
                 self.dirty = true;
             }
+            KeyCode::Enter => match self.login_focus {
+                LoginFocus::ShowPassword => {
+                    self.login_show_password = !self.login_show_password;
+                    self.dirty = true;
+                }
+                LoginFocus::Qr => {
+                    self.backend.request_qr();
+                    self.status = i18n::t(self.lang, "qr_requested").to_string();
+                    self.dirty = true;
+                }
+                _ => self.submit_login(),
+            },
             KeyCode::Backspace => {
-                self.login_input.pop();
+                if let Some(field) = self.login_field_mut() {
+                    field.pop();
+                }
                 self.dirty = true;
             }
-            KeyCode::Enter => self.submit_login(),
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.login_input.push(c);
-                self.dirty = true;
+                let allowed = match self.login_focus {
+                    LoginFocus::Phone => {
+                        c.is_ascii_digit() || matches!(c, '+' | ' ' | '-' | '(' | ')')
+                    }
+                    LoginFocus::Code => c.is_ascii_digit(),
+                    LoginFocus::Password => true,
+                    LoginFocus::Submit | LoginFocus::ShowPassword | LoginFocus::Qr => false,
+                };
+                if allowed {
+                    if let Some(field) = self.login_field_mut() {
+                        field.push(c);
+                    }
+                    self.dirty = true;
+                }
             }
             _ => {}
         }
     }
 
-    fn submit_login(&mut self) {
-        let value = self.login_input.trim().to_string();
-        if value.is_empty() {
-            return;
-        }
+    fn login_focus_order(&self) -> Vec<LoginFocus> {
         match self.backend.auth() {
             AuthView::WaitPhoneNumber => {
-                self.backend.submit_phone(value);
-                self.login_input.clear();
+                vec![LoginFocus::Phone, LoginFocus::Submit, LoginFocus::Qr]
+            }
+            AuthView::WaitCode => vec![LoginFocus::Code, LoginFocus::Submit],
+            AuthView::WaitPassword { .. } => vec![
+                LoginFocus::Password,
+                LoginFocus::ShowPassword,
+                LoginFocus::Submit,
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    fn cycle_login_focus(&mut self, forward: bool) {
+        let order = self.login_focus_order();
+        if order.is_empty() {
+            return;
+        }
+        let current = order
+            .iter()
+            .position(|focus| *focus == self.login_focus)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % order.len()
+        } else {
+            (current + order.len() - 1) % order.len()
+        };
+        self.login_focus = order[next];
+        self.dirty = true;
+    }
+
+    fn login_field_mut(&mut self) -> Option<&mut String> {
+        match self.login_focus {
+            LoginFocus::Phone => Some(&mut self.login_phone),
+            LoginFocus::Code => Some(&mut self.login_code),
+            LoginFocus::Password => Some(&mut self.login_password),
+            LoginFocus::Submit | LoginFocus::ShowPassword | LoginFocus::Qr => None,
+        }
+    }
+
+    fn submit_login(&mut self) {
+        self.login_error = None;
+        match self.backend.auth() {
+            AuthView::WaitPhoneNumber => {
+                let phone = self.login_phone.trim().to_string();
+                if phone.is_empty() {
+                    self.login_error = Some(i18n::t(self.lang, "phone_required").to_string());
+                    self.dirty = true;
+                    return;
+                }
+                self.backend.submit_phone(phone);
+                self.login_focus = LoginFocus::Code;
+                self.login_code.clear();
                 self.status = i18n::t(self.lang, "phone_submitted").to_string();
             }
             AuthView::WaitCode => {
-                self.backend.submit_code(value);
-                self.login_input.clear();
+                let code = self.login_code.trim().to_string();
+                if code.is_empty() {
+                    self.login_error = Some(i18n::t(self.lang, "code_required").to_string());
+                    self.dirty = true;
+                    return;
+                }
+                self.backend.submit_code(code);
                 self.status = i18n::t(self.lang, "code_submitted").to_string();
             }
             AuthView::WaitPassword { .. } => {
-                self.backend.submit_password(value);
-                self.login_input.clear();
+                let password = self.login_password.clone();
+                if password.is_empty() {
+                    self.login_error = Some(i18n::t(self.lang, "password_required").to_string());
+                    self.dirty = true;
+                    return;
+                }
+                self.backend.submit_password(password);
                 self.status = i18n::t(self.lang, "password_submitted").to_string();
             }
             _ => {}
@@ -640,7 +776,10 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
-        if self.backend.auth() != AuthView::Ready {
+        if !self.is_ready() {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.on_login_mouse(mouse.column, mouse.row);
+            }
             return;
         }
         if self.popup != Popup::None {
@@ -670,20 +809,43 @@ impl App {
                         self.focus = Focus::Composer;
                         self.dirty = true;
                     }
+                    Hit::Login(_) => {}
                 }
             }
             MouseEventKind::ScrollDown => match self.hit_at(mouse.column, mouse.row) {
                 Some(Hit::Chat(_)) => self.move_chat(1),
                 Some(Hit::Composer) => {}
+                Some(Hit::Login(_)) => {}
                 Some(Hit::Message(_)) | None => self.scroll_messages(3),
             },
             MouseEventKind::ScrollUp => match self.hit_at(mouse.column, mouse.row) {
                 Some(Hit::Chat(_)) => self.move_chat(-1),
                 Some(Hit::Composer) => {}
+                Some(Hit::Login(_)) => {}
                 Some(Hit::Message(_)) | None => self.scroll_messages(-3),
             },
             _ => {}
         }
+    }
+
+    fn on_login_mouse(&mut self, column: u16, row: u16) {
+        let Some(Hit::Login(hit)) = self.hit_at(column, row) else {
+            return;
+        };
+        match hit {
+            LoginHit::Phone => self.login_focus = LoginFocus::Phone,
+            LoginHit::Code => self.login_focus = LoginFocus::Code,
+            LoginHit::Password => self.login_focus = LoginFocus::Password,
+            LoginHit::Submit => self.submit_login(),
+            LoginHit::ShowPassword => {
+                self.login_show_password = !self.login_show_password;
+            }
+            LoginHit::Qr => {
+                self.backend.request_qr();
+                self.status = i18n::t(self.lang, "qr_requested").to_string();
+            }
+        }
+        self.dirty = true;
     }
 
     fn hit_at(&self, column: u16, row: u16) -> Option<Hit> {

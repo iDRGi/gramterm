@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Focus, Hit, Mode, Popup};
+use crate::app::{App, Focus, Hit, LoginFocus, LoginHit, Mode, Popup};
 use crate::backend::{AuthView, ChatKind};
 use crate::i18n;
 use crate::theme::Theme;
@@ -59,124 +59,9 @@ fn base(theme: Theme) -> Style {
     Style::default().fg(theme.fg).bg(theme.bg)
 }
 
-fn draw_login(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
-    let popup = centered_rect(64, 52, area);
+fn draw_login(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
+    let popup = login_card(area);
     frame.render_widget(Clear, popup);
-
-    let auth = app.backend.auth();
-    let mut lines = vec![
-        Line::from(Span::styled(
-            " Gramterm ",
-            Style::default()
-                .fg(theme.bg)
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            i18n::t(app.lang, "login_title"),
-            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-    ];
-
-    match auth {
-        AuthView::Starting => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_starting"),
-                Style::default().fg(theme.dim),
-            )));
-        }
-        AuthView::WaitPhoneNumber => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_phone"),
-                Style::default().fg(theme.accent),
-            )));
-            lines.push(Line::from(format!("> {}▌", app.login_input)));
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_hint_phone"),
-                Style::default().fg(theme.dim),
-            )));
-        }
-        AuthView::WaitCode => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_code"),
-                Style::default().fg(theme.accent),
-            )));
-            lines.push(Line::from(format!("> {}▌", app.login_input)));
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_hint_code"),
-                Style::default().fg(theme.dim),
-            )));
-        }
-        AuthView::WaitPassword { hint } => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_password"),
-                Style::default().fg(theme.accent),
-            )));
-            let masked = "•".repeat(app.login_input.chars().count());
-            lines.push(Line::from(format!("> {masked}▌")));
-            if !hint.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("hint: {hint}"),
-                    Style::default().fg(theme.warning),
-                )));
-            }
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_hint_password"),
-                Style::default().fg(theme.dim),
-            )));
-        }
-        AuthView::WaitOtherDevice { link } => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_qr"),
-                Style::default().fg(theme.accent),
-            )));
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_hint_qr"),
-                Style::default().fg(theme.dim),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                link,
-                Style::default().fg(theme.fg),
-            )));
-        }
-        AuthView::Ready => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "connected"),
-                Style::default().fg(theme.success),
-            )));
-        }
-        AuthView::Closed => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_closed"),
-                Style::default().fg(theme.error),
-            )));
-        }
-        AuthView::Error(message) => {
-            lines.push(Line::from(Span::styled(
-                i18n::t(app.lang, "login_error"),
-                Style::default().fg(theme.error),
-            )));
-            lines.push(Line::from(Span::styled(
-                message,
-                Style::default().fg(theme.error),
-            )));
-        }
-    }
-
-    if !app.status.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            app.status.clone(),
-            Style::default().fg(theme.dim),
-        )));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Ctrl+C — exit",
-        Style::default().fg(theme.dim),
-    )));
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -187,13 +72,278 @@ fn draw_login(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             Style::default().fg(theme.accent),
         ))
         .style(base(theme));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let auth = app.backend.auth();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .style(base(theme))
-            .wrap(Wrap { trim: false }),
-        popup,
+        Paragraph::new(Line::from(Span::styled(
+            " Gramterm ",
+            Style::default()
+                .fg(theme.bg)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme)),
+        chunks[0],
     );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            i18n::t(app.lang, "login_title"),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme)),
+        chunks[1],
+    );
+
+    let (step, hint, field, button, secondary, error) = match &auth {
+        AuthView::Starting => (
+            i18n::t(app.lang, "login_starting"),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+        ),
+        AuthView::WaitPhoneNumber => (
+            i18n::t(app.lang, "login_phone"),
+            i18n::t(app.lang, "login_hint_phone").to_string(),
+            Some((LoginHit::Phone, app.login_phone.clone(), false)),
+            Some(i18n::t(app.lang, "continue")),
+            Some((LoginHit::Qr, i18n::t(app.lang, "use_qr"))),
+            app.login_error.clone(),
+        ),
+        AuthView::WaitCode => (
+            i18n::t(app.lang, "login_code"),
+            i18n::t(app.lang, "login_hint_code").to_string(),
+            Some((LoginHit::Code, app.login_code.clone(), false)),
+            Some(i18n::t(app.lang, "sign_in")),
+            None,
+            app.login_error.clone(),
+        ),
+        AuthView::WaitPassword { hint } => (
+            i18n::t(app.lang, "login_password"),
+            if hint.is_empty() {
+                i18n::t(app.lang, "login_hint_password").to_string()
+            } else {
+                hint.clone()
+            },
+            Some((LoginHit::Password, app.login_password.clone(), true)),
+            Some(i18n::t(app.lang, "sign_in")),
+            Some((
+                LoginHit::ShowPassword,
+                if app.login_show_password {
+                    i18n::t(app.lang, "hide_password")
+                } else {
+                    i18n::t(app.lang, "show_password")
+                },
+            )),
+            app.login_error.clone(),
+        ),
+        AuthView::WaitOtherDevice { link } => (
+            i18n::t(app.lang, "login_qr"),
+            i18n::t(app.lang, "login_hint_qr").to_string(),
+            None,
+            None,
+            None,
+            Some(link.clone()),
+        ),
+        AuthView::Ready => (
+            i18n::t(app.lang, "connected"),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+        ),
+        AuthView::Closed => (
+            i18n::t(app.lang, "login_closed"),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+        ),
+        AuthView::Error(message) => (
+            i18n::t(app.lang, "login_error"),
+            String::new(),
+            None,
+            None,
+            None,
+            Some(message.clone()),
+        ),
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            step,
+            Style::default().fg(theme.accent),
+        )))
+        .style(base(theme)),
+        chunks[3],
+    );
+
+    let has_field = field.is_some();
+    if let Some((label, value, masked)) = field {
+        let focused = match label {
+            LoginHit::Phone => app.login_focus == LoginFocus::Phone,
+            LoginHit::Code => app.login_focus == LoginFocus::Code,
+            LoginHit::Password => app.login_focus == LoginFocus::Password,
+            _ => false,
+        };
+        let field_area = chunks[4];
+        app.hits.push((field_area, Hit::Login(label)));
+        let field_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(if focused { theme.accent } else { theme.border }));
+        let field_inner = field_block.inner(field_area);
+        frame.render_widget(field_block.style(base(theme)), field_area);
+
+        let shown = if masked && !app.login_show_password {
+            "•".repeat(value.chars().count())
+        } else {
+            value.clone()
+        };
+        let text = if shown.is_empty() {
+            format!("▌{hint}")
+        } else if focused {
+            format!("{shown}▌")
+        } else {
+            shown
+        };
+        let style = if value.is_empty() {
+            Style::default().fg(theme.dim).bg(theme.bg)
+        } else {
+            Style::default().fg(theme.fg).bg(theme.bg)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, style))).style(base(theme)),
+            field_inner,
+        );
+    } else {
+        let message = error.as_deref().unwrap_or(hint.as_str());
+        if !message.is_empty() {
+            frame.render_widget(
+                Paragraph::new(message)
+                    .style(Style::default().fg(theme.dim).bg(theme.bg))
+                    .wrap(Wrap { trim: false }),
+                chunks[4],
+            );
+        }
+    }
+
+    if has_field && !hint.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hint,
+                Style::default().fg(theme.dim),
+            )))
+            .style(base(theme))
+            .wrap(Wrap { trim: true }),
+            chunks[5],
+        );
+    }
+
+    if has_field && let Some(error) = error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                error,
+                Style::default().fg(theme.error),
+            )))
+            .style(base(theme))
+            .wrap(Wrap { trim: true }),
+            chunks[6],
+        );
+    }
+
+    if let Some(label) = button {
+        let area = chunks[8];
+        app.hits.push((area, Hit::Login(LoginHit::Submit)));
+        let style = if app.login_focus == LoginFocus::Submit {
+            Style::default()
+                .fg(theme.bg)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.accent).bg(theme.selected)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(format!("  {label} →  "), style)))
+                .alignment(Alignment::Center)
+                .style(base(theme)),
+            area,
+        );
+    }
+
+    if let Some((hit, label)) = secondary {
+        let area = chunks[9];
+        app.hits.push((area, Hit::Login(hit)));
+        let focused = (hit == LoginHit::Qr && app.login_focus == LoginFocus::Qr)
+            || (hit == LoginHit::ShowPassword && app.login_focus == LoginFocus::ShowPassword);
+        let style = if focused {
+            Style::default().fg(theme.bg).bg(theme.dim)
+        } else {
+            Style::default().fg(theme.dim)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(label, style)))
+                .alignment(Alignment::Center)
+                .style(base(theme)),
+            area,
+        );
+    }
+
+    if !app.status.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                app.status.clone(),
+                Style::default().fg(theme.dim),
+            )))
+            .style(base(theme)),
+            chunks[7],
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Tab — next · Enter — continue · Ctrl+C — exit",
+            Style::default().fg(theme.dim),
+        )))
+        .alignment(Alignment::Center)
+        .style(base(theme)),
+        chunks[10],
+    );
+}
+
+fn login_card(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(4).clamp(20, 72).min(area.width);
+    let height = area.height.saturating_sub(2).clamp(12, 28).min(area.height);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
