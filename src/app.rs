@@ -338,6 +338,9 @@ impl App {
             self.dirty = true;
         }
         self.sync_message_selection();
+        if let Some(chat_id) = self.current_chat_id() {
+            self.backend.mark_read(chat_id);
+        }
         let auth_after = self.backend.auth();
         if auth_before != auth_after {
             self.dirty = true;

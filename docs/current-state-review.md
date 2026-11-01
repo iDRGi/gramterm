@@ -16,7 +16,7 @@
 
 До бизнес-цели «Telegram TUI for humans» не хватает главного:
 
-- **живых обновлений** (новые сообщения, редактирование, удаление, read receipts);
+- **полного event pipeline** (редактирование, удаление, typing, реакции, папки);
 - **полной истории** (пагинация старше 50);
 - **медиа и сервисных сообщений** (сейчас только текст/подписи и заглушки);
 - **папок, архива, unread, typing, drafts** в списке чатов;
@@ -61,7 +61,7 @@ main
 
 - `TG_API_ID`, `TG_API_HASH` читаются из окружения; `.env` подхватывается launcher-скриптом.
 - TDLib logs сейчас пишутся в stderr и перенаправляются скриптом запуска; программной настройки `tdlib.log` в коде нет.
-- `next_auth` **поглощает все не-auth updates** и выбрасывает их. Это ключевая архитектурная проблема: новые сообщения и изменения чатов не доходят до UI.
+- `next_auth` раньше выбрасывал все не-auth updates; теперь они складываются в `pending_updates`, а worker разбирает минимальный набор: новые сообщения, send succeeded/failed, read inbox, title, last message. Edits/deletes/typing/positions всё ещё не обрабатываются.
 - После `logOut` создаётся новый TDLib client и переиспользуется старый receive loop.
 
 ### 3.2. Загрузка списка чатов
@@ -96,13 +96,13 @@ Auth Ready
 - `getChat` выполняется для каждого id отдельно и может ждать до 30 секунд; первый запуск всё ещё медленный;
 - `chats.json` — снимок, а не event-sourced состояние; при внешнем изменении чата он обновится только после нового `getChats`;
 - `chats.json` не шифруется и хранит названия/unread/pinned;
-- live updates не применяются, поэтому unread/preview в UI не меняются без перезапуска/перезагрузки.
+- live updates применяются частично: новые сообщения/read inbox обновляют UI, но edits/deletes/typing/positions ещё нет.
 
 ### 3.3. Открытие чата и загрузка истории
 
 ```
 App::open_selected_chat
-  -> mark_read(chat)             // сейчас no-op
+  -> mark_read(chat)             // viewMessages для последнего сообщения
   -> open_chat(chat)             // Backend::open_chat
        -> Command::History
             -> TgClient::history
@@ -138,7 +138,7 @@ App::open_selected_chat
 - sender resolution последовательный: до 50 `getUser`/`getChat`;
 - service/media сообщения отображаются заглушками, без содержимого;
 - нет reply/forwarded/album/reaction/poll UI;
-- `mark_read` всё ещё no-op: read receipts не отправляются, unread не очищается;
+- read receipts отправляются, но без focus-aware проверки; unread обновляется через `updateChatReadInbox`;
 - нет `closeChat` при уходе из чата.
 
 ### 3.4. Prefetch и кеш сообщений
@@ -167,7 +167,18 @@ Event::Chats
 - Кеш не шифрован; это та же проблема, что и TDLib DB.
 - Prefetch не отменяется при logout; старые задачи могут прислать событие после смены сессии (следующий шаг — generation/session id).
 
-### 3.5. Отправка сообщения
+### 3.5. Live updates и прочтение
+
+- `TgClient::next_auth` складывает не-auth `Update` в `pending_updates`.
+- Worker разбирает их каждые 100 мс:
+  - `updateNewMessage` → `Event::Incoming`, сообщение добавляется в кеш и UI;
+  - `updateMessageSendSucceeded/Failed` → замена/удаление pending;
+  - `updateChatReadInbox` → обнуление unread;
+  - `updateChatTitle` / `updateChatLastMessage` / `updateNewChat` → обновление списка.
+- При открытии чата `mark_read` отправляет `viewMessages` для последнего сообщения; повторно не отправляет, пока не появится более новое.
+- **Чего ещё нет:** edits, deletes, typing, chat positions/folders, reactions, focus-aware read receipts, обработка update для сообщений старше кеша.
+
+### 3.6. Отправка сообщения
 
 ```
 App::send
@@ -202,7 +213,7 @@ App::send
 - нет reply/edit/delete/forward;
 - нет outbox на диск: незавершённая отправка теряется при падении.
 
-### 3.6. Что видно в чатах
+### 3.7. Что видно в чатах
 
 | TDLib content | Сейчас |
 |---|---|
@@ -236,8 +247,8 @@ App::send
 | Блок | Статус | Комментарий |
 |---|---|---|
 | Вход | ⚠️ частично | телефон/код/2FA/QR-запрос и logout есть; QR-рендер и logout не проверены live; прокси нет |
-| Чаты | ⚠️ частично | 30 чатов, title/preview/unread/pin/mute/kind; нет папок/архива/пагинации/live |
-| Сообщения | ⚠️ частично | 50 последних, текст, отправка; нет пагинации/reply/edit/delete/forward/read receipts |
+| Чаты | ⚠️ частично | 30 чатов, title/preview/unread/pin/mute/kind; нет папок/архива/пагинации; live частично |
+| Сообщения | ⚠️ частично | 50 последних, текст, отправка, базовые read receipts; нет пагинации/reply/edit/delete/forward |
 | Медиа | ❌ | только текстовые заглушки, без файлов/фото/голоса |
 | Поиск | ❌ | нет |
 | Уведомления | ❌ | нет |
@@ -249,11 +260,9 @@ App::send
 
 ### P0 — блокирует ежедневное использование
 
-1. **Не-auth updates выбрасываются.** `TgClient::next_auth` забирает `Update` из канала и отбрасывает всё, кроме `AuthorizationState`. Без переработки не будет новых сообщений, edits, deletes, read receipts, typing, изменения списка чатов.
-2. **`mark_read` — no-op.** Чаты не помечаются прочитанными; read receipts не уходят; unread в списке не уменьшается.
-3. **Нет пагинации истории.** Старше 50 сообщений чат выглядит обрезанным.
-4. **Медиа и сервисные сообщения не отображаются.** Пользователь видит заглушки вместо фото/файлов/голосовых.
-5. **TDLib DB не шифруется.** `database_encryption_key` пустой; passcode отсутствует.
+1. **Нет пагинации истории.** Старше 50 сообщений чат выглядит обрезанным.
+2. **Медиа и сервисные сообщения не отображаются.** Пользователь видит заглушки вместо фото/файлов/голосовых.
+3. **TDLib DB не шифруется.** `database_encryption_key` пустой; passcode отсутствует.
 
 ### P1 — сильно ухудшает UX
 
@@ -261,7 +270,7 @@ App::send
 2. `history` использует sleep/retry вместо ожидания готовности TDLib.
 3. `getUser`/`getChat` для sender names выполняются последовательно.
 4. Нет `closeChat`; открытые чаты накапливаются.
-5. Нет live-обновления списка чатов; preview/unread быстро устаревают.
+5. Event pipeline частичный: нет edits/deletes/typing/positions; read receipts не focus-aware.
 6. Нет выбора/прокрутки к выбранному сообщению при keyboard-навигации.
 7. Нет date separators, группировки сообщений и reply-контекста.
 8. `sendMessage` optimistic-статус не отражает TDLib `sending_state`.
@@ -290,6 +299,8 @@ App::send
 8. **Фоновый prefetch**: top-8 чатов и чат под курсором загружаются заранее, отдельным семафором.
 9. **Кеш сообщений на диске**: `messages.json`; открытые ранее чаты показывают историю сразу после старта.
 10. **Concurrency**: `TgApi` позволяет history/send/chats выполнять в отдельных tokio-задачах, worker больше не блокируется на 30 секунд одной историей.
+11. **Minimal event pipeline**: новые сообщения, send succeeded/failed, read inbox, title, last message.
+12. **Read receipts**: `viewMessages` при открытии; unread очищается локально и по `updateChatReadInbox`.
 
 ## 7. План следующей полировки
 
@@ -326,8 +337,8 @@ App::send
 - [x] список чатов показывает preview/unread/pin/mute/kind;
 - [x] кеш чатов переживает рестарт;
 - [x] top-8 prefetch и кеш сообщений `messages.json`;
-- [ ] live-обновления;
-- [ ] read receipts;
+- [x] новые сообщения и read inbox приходят через update pipeline;
+- [ ] edits/deletes/typing/positions;
 - [ ] пагинация;
 - [ ] медиа;
 - [ ] passcode/encryption.
@@ -335,6 +346,6 @@ App::send
 ## 9. Вывод
 
 Текущий срез можно показывать как **демо**: «вход, список чатов, история, отправка текста».  
-Как ежедневный клиент он пока не готов: нет live-обновлений, read receipts, полной истории, медиа и шифрования.
+Как ежедневный клиент он пока не готов: event pipeline частичный, нет полной истории, медиа, passcode и шифрования.
 
 Следующий инженерный приоритет — не косметика, а **event pipeline**: без него любые улучшения списка чатов и сообщений останутся снимком на момент открытия.

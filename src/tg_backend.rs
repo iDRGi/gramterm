@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use gramterm_tg::{
-    AuthState, ChatInfo, ChatInfoKind, Config, MessageInfo, MessageKind as TgMessageKind, TgApi,
-    TgClient,
+    AuthState, ChatInfo, ChatInfoKind, Config, MessageInfo, MessageKind as TgMessageKind, TdUpdate,
+    TgApi, TgClient,
 };
 
 use crate::backend::{
@@ -27,6 +27,10 @@ enum Command {
     Logout,
     History(ChatId),
     Prefetch(ChatId),
+    MarkRead {
+        chat_id: ChatId,
+        message_id: MsgId,
+    },
     Send {
         chat_id: ChatId,
         text: String,
@@ -46,6 +50,27 @@ enum Event {
     HistoryFailed(ChatId),
     Notice(String),
     Error(String),
+    Incoming(Message),
+    MessageSent {
+        old_id: MsgId,
+        message: Message,
+    },
+    MessageSendFailed {
+        old_id: MsgId,
+        error: String,
+    },
+    ReadInbox {
+        chat_id: ChatId,
+        unread: u32,
+    },
+    ChatPreview {
+        chat_id: ChatId,
+        preview: String,
+    },
+    ChatTitle {
+        chat_id: ChatId,
+        title: String,
+    },
     Sent {
         chat_id: ChatId,
         temp_id: MsgId,
@@ -69,6 +94,7 @@ pub struct TgBackend {
     messages_cache: Option<PathBuf>,
     history_loading: HashSet<ChatId>,
     history_loaded: HashSet<ChatId>,
+    last_read: HashMap<ChatId, MsgId>,
     notice: Option<String>,
     next_temp_id: MsgId,
     send_failure: Option<SendFailure>,
@@ -96,6 +122,7 @@ impl TgBackend {
             messages_cache: None,
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
+            last_read: HashMap::new(),
             notice: None,
             next_temp_id: -1,
             send_failure: None,
@@ -117,6 +144,7 @@ impl TgBackend {
             messages_cache: None,
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
+            last_read: HashMap::new(),
             notice: None,
             next_temp_id: -1,
             send_failure: None,
@@ -169,6 +197,9 @@ impl TgBackend {
                 }
 
                 loop {
+                    for update in client.take_updates() {
+                        handle_update(&api, &event_tx, update).await;
+                    }
                     loop {
                         match cmd_rx.try_recv() {
                             Ok(Command::Phone(phone)) if state == AuthState::WaitPhoneNumber => {
@@ -265,6 +296,14 @@ impl TgBackend {
                                     load_history(&api, &events, chat_id).await;
                                 });
                             }
+                            Ok(Command::MarkRead {
+                                chat_id,
+                                message_id,
+                            }) if state == AuthState::Ready => {
+                                if let Err(error) = api.view_messages(chat_id, message_id).await {
+                                    let _ = event_tx.send(Event::Notice(format!("{error:#}")));
+                                }
+                            }
                             Ok(Command::Send {
                                 chat_id,
                                 text,
@@ -290,6 +329,10 @@ impl TgBackend {
                                     .await
                                     {
                                         Ok(Ok(info)) => {
+                                            tracing::info!(
+                                                "sent message {} to chat {chat_id}",
+                                                info.id
+                                            );
                                             let message = Message {
                                                 id: info.id,
                                                 chat_id: info.chat_id,
@@ -308,6 +351,9 @@ impl TgBackend {
                                             });
                                         }
                                         Ok(Err(error)) => {
+                                            tracing::error!(
+                                                "send to chat {chat_id} failed: {error:#}"
+                                            );
                                             let _ = event_tx.send(Event::SendFailed {
                                                 chat_id,
                                                 temp_id,
@@ -315,6 +361,7 @@ impl TgBackend {
                                             });
                                         }
                                         Err(_) => {
+                                            tracing::error!("send to chat {chat_id} timed out");
                                             let _ = event_tx.send(Event::SendFailed {
                                                 chat_id,
                                                 temp_id,
@@ -363,6 +410,7 @@ impl TgBackend {
             messages_cache: Some(messages_cache),
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
+            last_read: HashMap::new(),
             notice: None,
             next_temp_id: -1,
             send_failure: None,
@@ -408,6 +456,61 @@ async fn publish_ready(api: &TgApi, events: &Sender<Event>) {
             let _ = events.send(Event::Notice(format!("{error:#}")));
             let _ = events.send(Event::ChatsFailed);
         }
+    }
+}
+
+async fn handle_update(api: &TgApi, events: &Sender<Event>, update: TdUpdate) {
+    match update {
+        TdUpdate::NewMessage(update) => {
+            let message = api.message_info(&update.message).await;
+            let _ = events.send(Event::Incoming(map_message_info(message)));
+        }
+        TdUpdate::MessageSendSucceeded(update) => {
+            let message = api.message_info(&update.message).await;
+            let _ = events.send(Event::MessageSent {
+                old_id: update.old_message_id,
+                message: map_message_info(message),
+            });
+        }
+        TdUpdate::MessageSendFailed(update) => {
+            let _ = events.send(Event::MessageSendFailed {
+                old_id: update.old_message_id,
+                error: update.error.message,
+            });
+        }
+        TdUpdate::ChatReadInbox(update) => {
+            let _ = events.send(Event::ReadInbox {
+                chat_id: update.chat_id,
+                unread: update.unread_count.max(0) as u32,
+            });
+        }
+        TdUpdate::ChatTitle(update) => {
+            let _ = events.send(Event::ChatTitle {
+                chat_id: update.chat_id,
+                title: update.title,
+            });
+        }
+        TdUpdate::ChatLastMessage(update) => {
+            if let Some(last) = update.last_message.as_ref() {
+                let message = api.message_info(last).await;
+                let preview = if message.text.is_empty() {
+                    "[message]".to_string()
+                } else {
+                    message.text
+                };
+                let _ = events.send(Event::ChatPreview {
+                    chat_id: update.chat_id,
+                    preview,
+                });
+            }
+        }
+        TdUpdate::NewChat(update) => {
+            let _ = events.send(Event::ChatTitle {
+                chat_id: update.chat.id,
+                title: update.chat.title,
+            });
+        }
+        _ => {}
     }
 }
 
@@ -685,9 +788,43 @@ impl Backend for TgBackend {
         message
     }
 
-    fn mark_read(&mut self, _chat: ChatId) {}
+    fn mark_read(&mut self, chat: ChatId) {
+        let Some(message_id) = self
+            .message_cache
+            .get(&chat)
+            .and_then(|messages| messages.last())
+            .map(|message| message.id)
+            .filter(|message_id| *message_id > 0)
+        else {
+            return;
+        };
+        if self
+            .last_read
+            .get(&chat)
+            .is_some_and(|last| *last >= message_id)
+        {
+            return;
+        }
+        if self
+            .tx
+            .send(Command::MarkRead {
+                chat_id: chat,
+                message_id,
+            })
+            .is_ok()
+        {
+            self.last_read.insert(chat, message_id);
+            if let Some(cached) = self.chats.iter_mut().find(|cached| cached.id == chat) {
+                cached.unread = 0;
+            }
+            if let Some(path) = &self.chats_cache {
+                save_chat_cache(path, &self.chats);
+            }
+        }
+    }
 
     fn tick(&mut self) -> Option<Message> {
+        let mut arrived = None;
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 Event::Auth(auth) => {
@@ -781,9 +918,85 @@ impl Backend for TgBackend {
                         error,
                     });
                 }
+                Event::Incoming(message) => {
+                    let messages = self.message_cache.entry(message.chat_id).or_default();
+                    if !messages.iter().any(|cached| cached.id == message.id) {
+                        messages.push(message.clone());
+                        messages.sort_by_key(|cached| cached.id);
+                    }
+                    if let Some(chat) = self
+                        .chats
+                        .iter_mut()
+                        .find(|chat| chat.id == message.chat_id)
+                    {
+                        chat.preview = if message.text.is_empty() {
+                            "[message]".to_string()
+                        } else {
+                            message.text.clone()
+                        };
+                        if !message.outgoing {
+                            chat.unread = chat.unread.saturating_add(1);
+                        }
+                    }
+                    if let Some(path) = &self.messages_cache {
+                        save_message_cache(path, &self.message_cache);
+                    }
+                    arrived = Some(message);
+                }
+                Event::MessageSent { old_id, message } => {
+                    message_cache::replace_pending(
+                        &mut self.message_cache,
+                        message.chat_id,
+                        old_id,
+                        message.clone(),
+                    );
+                    if let Some(path) = &self.messages_cache {
+                        save_message_cache(path, &self.message_cache);
+                    }
+                    arrived = Some(message);
+                }
+                Event::MessageSendFailed { old_id, error } => {
+                    let pending = self.message_cache.values_mut().find_map(|messages| {
+                        messages
+                            .iter()
+                            .position(|message| message.id == old_id)
+                            .map(|index| messages.remove(index))
+                    });
+                    if let Some(pending) = pending {
+                        self.send_failure = Some(SendFailure {
+                            chat_id: pending.chat_id,
+                            text: pending.text,
+                            error,
+                        });
+                    }
+                }
+                Event::ReadInbox { chat_id, unread } => {
+                    if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                        chat.unread = unread;
+                    }
+                    if let Some(path) = &self.chats_cache {
+                        save_chat_cache(path, &self.chats);
+                    }
+                }
+                Event::ChatPreview { chat_id, preview } => {
+                    if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                        chat.preview = preview;
+                    }
+                    if let Some(path) = &self.chats_cache {
+                        save_chat_cache(path, &self.chats);
+                    }
+                }
+                Event::ChatTitle { chat_id, title } => {
+                    if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                        chat.title = title;
+                    }
+                    if let Some(path) = &self.chats_cache {
+                        save_chat_cache(path, &self.chats);
+                    }
+                }
             }
         }
-        None
+        arrived
     }
 }
 
@@ -863,6 +1076,35 @@ mod tests {
 
         backend.open_chat(7);
         assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn mark_read_sends_only_when_the_last_message_changes() {
+        let (mut backend, _events, commands) = backend();
+        backend
+            .message_cache
+            .insert(7, vec![message(42, "hello", false)]);
+        backend.mark_read(7);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::MarkRead {
+                chat_id: 7,
+                message_id: 42
+            })
+        ));
+        backend.mark_read(7);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn incoming_event_populates_cache() {
+        let (mut backend, events, _commands) = backend();
+        events
+            .send(Event::Incoming(message(43, "incoming", false)))
+            .unwrap();
+        assert!(backend.tick().is_some());
+        assert_eq!(backend.messages(7).len(), 1);
+        assert_eq!(backend.messages(7)[0].text, "incoming");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! surface so the TUI can eventually depend on it without knowing about
 //! `tdlib-rs` details.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,6 +13,9 @@ use tdlib_rs::enums::{self, Update};
 use tdlib_rs::functions;
 use tdlib_rs::types;
 use tokio::sync::mpsc;
+
+pub use tdlib_rs::enums::Update as TdUpdate;
+pub use tdlib_rs::types::Message as TdMessage;
 
 const APPLICATION_NAME: &str = "Gramterm";
 
@@ -117,6 +120,7 @@ pub struct TgClient {
     api: TgApi,
     config: Config,
     updates: mpsc::UnboundedReceiver<(i32, Update)>,
+    pending_updates: VecDeque<Update>,
 }
 
 impl TgClient {
@@ -158,6 +162,7 @@ impl TgClient {
             api,
             config,
             updates,
+            pending_updates: VecDeque::new(),
         };
 
         // A new client sends nothing until it gets its first request.
@@ -189,9 +194,13 @@ impl TgClient {
             if client_id != self.client_id {
                 continue;
             }
-            let Update::AuthorizationState(state) = update else {
-                tracing::debug!("tdlib: non-auth update");
-                continue;
+            let state = match update {
+                Update::AuthorizationState(state) => state,
+                other => {
+                    tracing::debug!("tdlib: queued non-auth update");
+                    self.pending_updates.push_back(other);
+                    continue;
+                }
             };
             tracing::info!("tdlib: auth update");
             match state.authorization_state {
@@ -203,6 +212,10 @@ impl TgClient {
                 other => return Ok(map_auth(other)),
             }
         }
+    }
+
+    pub fn take_updates(&mut self) -> Vec<Update> {
+        self.pending_updates.drain(..).collect()
     }
 
     async fn set_parameters(&self) -> Result<()> {
@@ -476,6 +489,16 @@ impl TgApi {
         };
         cache.insert(key, name.clone());
         name
+    }
+
+    pub async fn message_info(&self, message: &TdMessage) -> MessageInfo {
+        let sender = if message.is_outgoing {
+            "You".to_string()
+        } else {
+            self.sender_name(&message.sender_id, &mut HashMap::new())
+                .await
+        };
+        map_message(message.clone(), sender)
     }
 
     pub async fn send_text(&self, chat_id: i64, text: &str) -> Result<MessageInfo> {
