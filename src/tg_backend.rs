@@ -466,6 +466,11 @@ async fn publish_ready(api: &TgApi, events: &Sender<Event>) {
 async fn handle_update(api: &TgApi, events: &Sender<Event>, update: TdUpdate) {
     match update {
         TdUpdate::NewMessage(update) => {
+            tracing::info!(
+                "incoming message {} in chat {}",
+                update.message.id,
+                update.message.chat_id
+            );
             let message = api.message_info(&update.message).await;
             let _ = events.send(Event::Incoming(map_message_info(message)));
         }
