@@ -23,7 +23,7 @@ pub struct Chat {
 }
 
 #[allow(dead_code)] // media/service variants come from the feature-gated TDLib backend
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageKind {
     Text,
     Photo,
@@ -40,7 +40,7 @@ pub enum MessageKind {
     Other,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     /// Reserved for TDLib updates and deduplication.
     #[allow(dead_code)]
@@ -86,6 +86,8 @@ pub trait Backend {
     fn submit_password(&mut self, password: String);
     fn request_qr(&mut self) {}
     fn open_chat(&mut self, _chat: ChatId) {}
+    #[allow(dead_code)]
+    fn prefetch_chat(&mut self, _chat: ChatId) {}
     #[allow(dead_code)]
     fn history_loading(&self, _chat: ChatId) -> bool {
         false

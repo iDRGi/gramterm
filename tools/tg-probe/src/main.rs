@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
             AuthState::Ready => {
                 let me = client.me().await?;
                 println!("Logged in as {} (id {})", me.name, me.id);
-                for chat in client.chats(20).await? {
+                for chat in client.api().chats(20).await? {
                     println!("  {:>12}  {}", chat.id, chat.title);
                 }
                 break;

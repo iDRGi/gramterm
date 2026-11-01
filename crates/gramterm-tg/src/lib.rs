@@ -106,8 +106,15 @@ pub struct MessageInfo {
     pub edited: bool,
 }
 
+/// The subset of TDLib calls that can run concurrently for one client.
+#[derive(Clone)]
+pub struct TgApi {
+    client_id: i32,
+}
+
 pub struct TgClient {
     client_id: i32,
+    api: TgApi,
     config: Config,
     updates: mpsc::UnboundedReceiver<(i32, Update)>,
 }
@@ -145,8 +152,10 @@ impl TgClient {
     ) -> Result<(Self, AuthState)> {
         tracing::info!("tdlib: creating client");
         let client_id = tdlib_rs::create_client();
+        let api = TgApi { client_id };
         let mut client = Self {
             client_id,
+            api,
             config,
             updates,
         };
@@ -162,6 +171,10 @@ impl TgClient {
 
     pub fn client_id(&self) -> i32 {
         self.client_id
+    }
+
+    pub fn api(&self) -> TgApi {
+        self.api.clone()
     }
 
     /// Waits for the next authorization state. `waitTdlibParameters` is
@@ -275,6 +288,7 @@ impl TgClient {
     pub async fn reconnect(&mut self) -> Result<AuthState> {
         self.config.prepare()?;
         self.client_id = tdlib_rs::create_client();
+        self.api.client_id = self.client_id;
         td(functions::get_option("version".into(), self.client_id).await)?;
         self.next_auth().await
     }
@@ -289,7 +303,9 @@ impl TgClient {
                 .to_string(),
         })
     }
+}
 
+impl TgApi {
     /// Loads and resolves the first `limit` chats. TDLib returns ids from
     /// `getChats`; titles require a `getChat` per id.
     pub async fn chats(&self, limit: i32) -> Result<Vec<ChatInfo>> {

@@ -268,6 +268,9 @@ impl App {
             .unwrap_or(0) as isize;
         let next = (current + delta).clamp(0, visible.len() as isize - 1) as usize;
         self.selected_chat = visible[next];
+        if let Some(chat_id) = self.current_chat_id() {
+            self.backend.prefetch_chat(chat_id);
+        }
         self.selected_message = None;
         self.dirty = true;
     }

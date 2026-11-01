@@ -1,10 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
+use tokio::sync::Semaphore;
+
 use gramterm_tg::{
-    AuthState, ChatInfo, ChatInfoKind, Config, MessageInfo, MessageKind as TgMessageKind, TgClient,
+    AuthState, ChatInfo, ChatInfoKind, Config, MessageInfo, MessageKind as TgMessageKind, TgApi,
+    TgClient,
 };
 
 use crate::backend::{
@@ -22,6 +26,7 @@ enum Command {
     Qr,
     Logout,
     History(ChatId),
+    Prefetch(ChatId),
     Send {
         chat_id: ChatId,
         text: String,
@@ -61,6 +66,7 @@ pub struct TgBackend {
     chats_cache: Option<PathBuf>,
     chats_loading: bool,
     message_cache: HashMap<ChatId, Vec<Message>>,
+    messages_cache: Option<PathBuf>,
     history_loading: HashSet<ChatId>,
     history_loaded: HashSet<ChatId>,
     notice: Option<String>,
@@ -87,6 +93,7 @@ impl TgBackend {
             chats_cache: None,
             chats_loading: false,
             message_cache: HashMap::new(),
+            messages_cache: None,
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
             notice: None,
@@ -107,6 +114,7 @@ impl TgBackend {
             chats_cache: None,
             chats_loading: false,
             message_cache: HashMap::new(),
+            messages_cache: None,
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
             notice: None,
@@ -119,6 +127,8 @@ impl TgBackend {
     fn start(config: Config) -> Self {
         let chats_cache = config.data_dir.join("chats.json");
         let cached_chats = load_chat_cache(&chats_cache);
+        let messages_cache = config.data_dir.join("messages.json");
+        let cached_messages = load_message_cache(&messages_cache);
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -149,10 +159,13 @@ impl TgBackend {
                     }
                 };
                 tracing::info!("TDLib connected: {state:?}");
+                let mut api = client.api();
+                let history_slots = Arc::new(Semaphore::new(1));
+                let prefetch_slots = Arc::new(Semaphore::new(1));
 
                 let _ = event_tx.send(Event::Auth(map_auth(state.clone())));
                 if state == AuthState::Ready {
-                    publish_ready(&client, &event_tx).await;
+                    publish_ready(&api, &event_tx).await;
                 }
 
                 loop {
@@ -192,6 +205,7 @@ impl TgBackend {
                                                 match client.reconnect().await {
                                                     Ok(next) => {
                                                         state = next;
+                                                        api = client.api();
                                                         let _ = event_tx
                                                             .send(Event::Auth(map_auth(state.clone())));
                                                     }
@@ -230,7 +244,26 @@ impl TgBackend {
                                 }
                             }
                             Ok(Command::History(chat_id)) => {
-                                load_history(&client, &event_tx, chat_id).await;
+                                let api = api.clone();
+                                let events = event_tx.clone();
+                                let slots = Arc::clone(&history_slots);
+                                tokio::spawn(async move {
+                                    let Ok(_permit) = slots.acquire_owned().await else {
+                                        return;
+                                    };
+                                    load_history(&api, &events, chat_id).await;
+                                });
+                            }
+                            Ok(Command::Prefetch(chat_id)) => {
+                                let api = api.clone();
+                                let events = event_tx.clone();
+                                let slots = Arc::clone(&prefetch_slots);
+                                tokio::spawn(async move {
+                                    let Ok(_permit) = slots.acquire_owned().await else {
+                                        return;
+                                    };
+                                    load_history(&api, &events, chat_id).await;
+                                });
                             }
                             Ok(Command::Send {
                                 chat_id,
@@ -252,7 +285,7 @@ impl TgBackend {
                                 } else {
                                     match tokio::time::timeout(
                                         Duration::from_secs(30),
-                                        client.send_text(chat_id, &text),
+                                        api.send_text(chat_id, &text),
                                     )
                                     .await
                                     {
@@ -264,9 +297,9 @@ impl TgBackend {
                                                 text: info.text,
                                                 outgoing: info.outgoing,
                                                 time: info.time,
-                                                kind: MessageKind::Text,
+                                                kind: map_message_kind(info.kind),
                                                 pending: false,
-                                                edited: false,
+                                                edited: info.edited,
                                             };
                                             let _ = event_tx.send(Event::Sent {
                                                 chat_id,
@@ -303,7 +336,7 @@ impl TgBackend {
                             state = next;
                             let _ = event_tx.send(Event::Auth(map_auth(state.clone())));
                             if state == AuthState::Ready {
-                                publish_ready(&client, &event_tx).await;
+                                publish_ready(&api, &event_tx).await;
                             }
                             if state == AuthState::Closed {
                                 return;
@@ -326,7 +359,8 @@ impl TgBackend {
             chats: cached_chats,
             chats_cache: Some(chats_cache),
             chats_loading: false,
-            message_cache: HashMap::new(),
+            message_cache: cached_messages,
+            messages_cache: Some(messages_cache),
             history_loading: HashSet::new(),
             history_loaded: HashSet::new(),
             notice: None,
@@ -334,12 +368,37 @@ impl TgBackend {
             send_failure: None,
         }
     }
+
+    fn request_history(&mut self, chat: ChatId, prefetch: bool) {
+        let sparse = self
+            .message_cache
+            .get(&chat)
+            .is_none_or(|messages| messages.len() <= 1);
+        if prefetch && !sparse {
+            return;
+        }
+        if (!sparse && self.history_loaded.contains(&chat)) || !self.history_loading.insert(chat) {
+            return;
+        }
+        if sparse {
+            self.history_loaded.remove(&chat);
+        }
+        tracing::debug!("requesting history for chat {chat} (prefetch={prefetch})");
+        let command = if prefetch {
+            Command::Prefetch(chat)
+        } else {
+            Command::History(chat)
+        };
+        if self.tx.send(command).is_err() {
+            self.history_loading.remove(&chat);
+        }
+    }
 }
 
-async fn publish_ready(client: &TgClient, events: &Sender<Event>) {
+async fn publish_ready(api: &TgApi, events: &Sender<Event>) {
     let _ = events.send(Event::ChatsLoading);
     tracing::info!("loading chat list");
-    match client.chats(30).await {
+    match api.chats(30).await {
         Ok(chats) => {
             tracing::info!("chat list loaded: {} chats", chats.len());
             let _ = events.send(Event::Chats(chats));
@@ -352,13 +411,10 @@ async fn publish_ready(client: &TgClient, events: &Sender<Event>) {
     }
 }
 
-async fn load_history(client: &TgClient, events: &Sender<Event>, chat_id: ChatId) {
+async fn load_history(api: &TgApi, events: &Sender<Event>, chat_id: ChatId) {
     tracing::info!("loading history for chat {chat_id}");
-    let result = tokio::time::timeout(
-        Duration::from_secs(30),
-        client.history(chat_id, HISTORY_LIMIT),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(Duration::from_secs(30), api.history(chat_id, HISTORY_LIMIT)).await;
     match result {
         Ok(Ok(messages)) => {
             tracing::info!(
@@ -466,6 +522,34 @@ fn save_chat_cache(path: &Path, chats: &[Chat]) {
     }
 }
 
+fn load_message_cache(path: &Path) -> HashMap<ChatId, Vec<Message>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    let Ok(mut cache) = serde_json::from_slice::<HashMap<ChatId, Vec<Message>>>(&bytes) else {
+        tracing::warn!("cannot read message cache {}", path.display());
+        return HashMap::new();
+    };
+    for messages in cache.values_mut() {
+        messages.retain(|message| message.id > 0 && !message.pending);
+        if messages.len() > 100 {
+            messages.drain(..messages.len() - 100);
+        }
+    }
+    cache
+}
+
+fn save_message_cache(path: &Path, cache: &HashMap<ChatId, Vec<Message>>) {
+    match serde_json::to_vec(cache) {
+        Ok(bytes) => {
+            if let Err(error) = std::fs::write(path, bytes) {
+                tracing::warn!("cannot write message cache {}: {error}", path.display());
+            }
+        }
+        Err(error) => tracing::warn!("cannot serialize message cache: {error}"),
+    }
+}
+
 fn map_auth(state: AuthState) -> AuthView {
     match state {
         AuthState::WaitPhoneNumber => AuthView::WaitPhoneNumber,
@@ -509,6 +593,9 @@ impl Backend for TgBackend {
         if let Some(path) = &self.chats_cache {
             let _ = std::fs::remove_file(path);
         }
+        if let Some(path) = &self.messages_cache {
+            let _ = std::fs::remove_file(path);
+        }
         if self.tx.send(Command::Logout).is_err() {
             self.auth = AuthView::Error("TDLib worker is not running".into());
         } else {
@@ -517,20 +604,11 @@ impl Backend for TgBackend {
     }
 
     fn open_chat(&mut self, chat: ChatId) {
-        let sparse = self
-            .message_cache
-            .get(&chat)
-            .is_none_or(|messages| messages.len() <= 1);
-        if (!sparse && self.history_loaded.contains(&chat)) || !self.history_loading.insert(chat) {
-            return;
-        }
-        if sparse {
-            self.history_loaded.remove(&chat);
-        }
-        tracing::debug!("requesting history for chat {chat}");
-        if self.tx.send(Command::History(chat)).is_err() {
-            self.history_loading.remove(&chat);
-        }
+        self.request_history(chat, false);
+    }
+
+    fn prefetch_chat(&mut self, chat: ChatId) {
+        self.request_history(chat, true);
     }
 
     fn take_notice(&mut self) -> Option<String> {
@@ -645,6 +723,11 @@ impl Backend for TgBackend {
                     if let Some(path) = &self.chats_cache {
                         save_chat_cache(path, &self.chats);
                     }
+                    let prefetch: Vec<ChatId> =
+                        self.chats.iter().take(8).map(|chat| chat.id).collect();
+                    for chat_id in prefetch {
+                        self.request_history(chat_id, true);
+                    }
                 }
                 Event::ChatsLoading => {
                     self.chats_loading = true;
@@ -657,6 +740,9 @@ impl Backend for TgBackend {
                     self.history_loaded.insert(chat_id);
                     let incoming = messages.into_iter().map(map_message_info).collect();
                     merge_history(self.message_cache.entry(chat_id).or_default(), incoming);
+                    if let Some(path) = &self.messages_cache {
+                        save_message_cache(path, &self.message_cache);
+                    }
                 }
                 Event::HistoryFailed(chat_id) => {
                     self.history_loading.remove(&chat_id);
@@ -678,6 +764,9 @@ impl Backend for TgBackend {
                         temp_id,
                         message,
                     );
+                    if let Some(path) = &self.messages_cache {
+                        save_message_cache(path, &self.message_cache);
+                    }
                 }
                 Event::SendFailed {
                     chat_id,
@@ -760,6 +849,37 @@ mod tests {
 
         backend.open_chat(7);
         assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn prefetch_uses_the_low_priority_command_once() {
+        let (mut backend, _events, commands) = backend();
+        backend.prefetch_chat(7);
+        assert!(backend.history_loading(7));
+        assert!(matches!(commands.try_recv(), Ok(Command::Prefetch(7))));
+
+        backend.prefetch_chat(7);
+        assert!(commands.try_recv().is_err());
+
+        backend.open_chat(7);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn message_cache_round_trips_through_disk() {
+        let path = std::env::temp_dir().join(format!(
+            "gramterm-messages-test-{}.json",
+            std::process::id()
+        ));
+        let mut cache = HashMap::new();
+        cache.insert(7, vec![message(1, "hello", false)]);
+        save_message_cache(&path, &cache);
+        let loaded = load_message_cache(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded[&7].len(), 1);
+        assert_eq!(loaded[&7][0].text, "hello");
+        assert!(!loaded[&7][0].pending);
     }
 
     #[test]
