@@ -15,7 +15,10 @@ use std::panic;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind,
+};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
 use tracing_subscriber::EnvFilter;
@@ -38,7 +41,7 @@ fn main() -> Result<()> {
 
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         ratatui::restore();
         original_hook(info);
     }));
@@ -50,10 +53,14 @@ fn main() -> Result<()> {
         ratatui::restore();
         return Err(error.into());
     }
+    if let Err(error) = execute!(io::stdout(), EnableBracketedPaste) {
+        ratatui::restore();
+        return Err(error.into());
+    }
 
     let result = run(&mut terminal, options);
 
-    let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -88,6 +95,7 @@ fn run(terminal: &mut DefaultTerminal, options: Options) -> Result<()> {
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
+                Event::Paste(text) => app.on_paste(text),
                 Event::Mouse(mouse) => app.on_mouse(mouse),
                 Event::Resize(_, _) => app.dirty = true,
                 _ => {}

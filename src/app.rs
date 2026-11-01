@@ -403,6 +403,22 @@ impl App {
         }
     }
 
+    pub fn on_paste(&mut self, text: String) {
+        if !self.is_ready() {
+            if let Some(field) = self.login_field_mut() {
+                field.push_str(&text);
+                self.dirty = true;
+            }
+            return;
+        }
+        if self.popup != Popup::None {
+            return;
+        }
+        self.focus = Focus::Composer;
+        self.input.push_str(&text);
+        self.dirty = true;
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))

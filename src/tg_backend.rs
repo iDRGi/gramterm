@@ -446,15 +446,19 @@ impl TgBackend {
 async fn publish_ready(api: &TgApi, events: &Sender<Event>) {
     let _ = events.send(Event::ChatsLoading);
     tracing::info!("loading chat list");
-    match api.chats(30).await {
-        Ok(chats) => {
-            tracing::info!("chat list loaded: {} chats", chats.len());
-            let _ = events.send(Event::Chats(chats));
-        }
-        Err(error) => {
-            tracing::error!("chat list failed: {error:#}");
-            let _ = events.send(Event::Notice(format!("{error:#}")));
-            let _ = events.send(Event::ChatsFailed);
+    for limit in [30, 100] {
+        match api.chats(limit).await {
+            Ok(chats) => {
+                tracing::info!("chat list loaded: {} chats", chats.len());
+                let _ = events.send(Event::Chats(chats));
+            }
+            Err(error) => {
+                tracing::error!("chat list failed: {error:#}");
+                let _ = events.send(Event::Notice(format!("{error:#}")));
+                if limit == 30 {
+                    let _ = events.send(Event::ChatsFailed);
+                }
+            }
         }
     }
 }
