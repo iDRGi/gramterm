@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message, MsgId};
+use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message, MessageKind, MsgId};
 
 #[derive(Debug)]
 pub struct DemoBackend {
@@ -72,6 +72,7 @@ impl DemoBackend {
                     text: "Gramterm: Telegram в терминале, но по-человечески.".into(),
                     outgoing: true,
                     time: "09:12".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -82,6 +83,7 @@ impl DemoBackend {
                     text: "Simple по умолчанию, vim по желанию. Мышь, RU/EN, passcode.".into(),
                     outgoing: true,
                     time: "09:13".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -98,6 +100,7 @@ impl DemoBackend {
                     text: "Привет! Видел твой TUI — уже выглядит живо.".into(),
                     outgoing: false,
                     time: "10:41".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -108,6 +111,7 @@ impl DemoBackend {
                     text: "Главное — не уходить в vim-only. Мышь и простой режим решают.".into(),
                     outgoing: false,
                     time: "10:42".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -118,6 +122,7 @@ impl DemoBackend {
                     text: "Согласен. Начинаем с каркаса и demo-режима.".into(),
                     outgoing: true,
                     time: "10:43".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -128,6 +133,7 @@ impl DemoBackend {
                     text: "TUI уже собирается. Ждём TDLib.".into(),
                     outgoing: false,
                     time: "10:44".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -144,6 +150,7 @@ impl DemoBackend {
                     text: "План Phase 0 готов: каркас, MockBackend, Simple, мышь.".into(),
                     outgoing: true,
                     time: "11:00".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -154,6 +161,7 @@ impl DemoBackend {
                     text: "TDLib подключаем вторым этапом, когда UI уже можно смотреть.".into(),
                     outgoing: false,
                     time: "11:01".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -170,6 +178,7 @@ impl DemoBackend {
                     text: "Привет! Как продвигается клиент?".into(),
                     outgoing: false,
                     time: "12:05".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -180,6 +189,7 @@ impl DemoBackend {
                     text: "Пишу каркас. Мышь уже работает, осталось TDLib.".into(),
                     outgoing: true,
                     time: "12:06".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -190,6 +200,7 @@ impl DemoBackend {
                     text: "Круто. Не забудь про русский язык и уведомления.".into(),
                     outgoing: false,
                     time: "12:07".into(),
+                    kind: MessageKind::Text,
                     pending: false,
                     edited: false,
                 },
@@ -205,6 +216,7 @@ impl DemoBackend {
                 text: "Новые функции Telegram: истории, реакции и многое другое.".into(),
                 outgoing: false,
                 time: "08:30".into(),
+                kind: MessageKind::Text,
                 pending: false,
                 edited: false,
             }],
@@ -253,6 +265,7 @@ impl Backend for DemoBackend {
             text: text.clone(),
             outgoing: true,
             time: "now".into(),
+            kind: MessageKind::Text,
             pending: false,
             edited: false,
         };
@@ -286,6 +299,7 @@ impl Backend for DemoBackend {
             text: "Сообщение из demo-режима: TDLib ещё не подключён.".into(),
             outgoing: false,
             time: "now".into(),
+            kind: MessageKind::Text,
             pending: false,
             edited: false,
         };

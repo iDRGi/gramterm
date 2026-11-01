@@ -54,6 +54,7 @@ fn pending_index(messages: &[Message], temp_id: MsgId) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::MessageKind;
 
     fn message(id: MsgId, text: &str, pending: bool) -> Message {
         Message {
@@ -63,6 +64,7 @@ mod tests {
             text: text.into(),
             outgoing: true,
             time: "12:00".into(),
+            kind: MessageKind::Text,
             pending,
             edited: false,
         }

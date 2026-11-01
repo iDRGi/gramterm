@@ -989,7 +989,7 @@ fn inside(rect: Rect, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{ChatKind, Message, SendFailure};
+    use crate::backend::{ChatKind, Message, MessageKind, SendFailure};
     use crossterm::event::{KeyEventKind, KeyEventState};
 
     fn app() -> App {
@@ -1059,6 +1059,7 @@ mod tests {
                 text,
                 outgoing: true,
                 time: "now".into(),
+                kind: MessageKind::Text,
                 pending: true,
                 edited: false,
             }

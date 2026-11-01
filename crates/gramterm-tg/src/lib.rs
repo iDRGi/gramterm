@@ -62,6 +62,36 @@ pub struct UserInfo {
 pub struct ChatInfo {
     pub id: i64,
     pub title: String,
+    pub preview: String,
+    pub unread: u32,
+    pub muted: bool,
+    pub pinned: bool,
+    pub kind: ChatInfoKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatInfoKind {
+    Saved,
+    Private,
+    Group,
+    Channel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Text,
+    Photo,
+    Video,
+    Animation,
+    Audio,
+    Voice,
+    Sticker,
+    File,
+    Poll,
+    Location,
+    Contact,
+    Service,
+    Other,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +102,8 @@ pub struct MessageInfo {
     pub text: String,
     pub outgoing: bool,
     pub time: String,
+    pub kind: MessageKind,
+    pub edited: bool,
 }
 
 pub struct TgClient {
@@ -262,6 +294,10 @@ impl TgClient {
     /// `getChats`; titles require a `getChat` per id.
     pub async fn chats(&self, limit: i32) -> Result<Vec<ChatInfo>> {
         let client_id = self.client_id;
+        let my_id = match functions::get_me(client_id).await {
+            Ok(enums::User::User(user)) => Some(user.id),
+            _ => None,
+        };
         // TDLib starts loading the main chat list automatically after login.
         // `loadChats` here used to trigger a second, slow sync and could block
         // the first `getChats`; query what is already available instead.
@@ -283,13 +319,41 @@ impl TgClient {
             )
             .await
             {
-                Ok(Ok(enums::Chat::Chat(chat))) => ChatInfo {
-                    id: chat.id,
-                    title: chat.title,
-                },
+                Ok(Ok(enums::Chat::Chat(chat))) => {
+                    let kind = match &chat.r#type {
+                        enums::ChatType::Supergroup(group) if group.is_channel => {
+                            ChatInfoKind::Channel
+                        }
+                        enums::ChatType::Supergroup(_) | enums::ChatType::BasicGroup(_) => {
+                            ChatInfoKind::Group
+                        }
+                        enums::ChatType::Private(user) if Some(user.user_id) == my_id => {
+                            ChatInfoKind::Saved
+                        }
+                        _ => ChatInfoKind::Private,
+                    };
+                    ChatInfo {
+                        id: chat.id,
+                        title: chat.title,
+                        preview: chat
+                            .last_message
+                            .as_ref()
+                            .map(|message| content_preview(&message.content))
+                            .unwrap_or_default(),
+                        unread: chat.unread_count.max(0) as u32,
+                        muted: chat.notification_settings.mute_for > 0,
+                        pinned: chat.positions.iter().any(|position| position.is_pinned),
+                        kind,
+                    }
+                }
                 _ => ChatInfo {
                     id: chat_id,
                     title: format!("Chat {chat_id}"),
+                    preview: String::new(),
+                    unread: 0,
+                    muted: false,
+                    pinned: false,
+                    kind: ChatInfoKind::Private,
                 },
             }
         });
@@ -303,7 +367,6 @@ impl TgClient {
         Ok(())
     }
 
-    /// Returns the newest `limit` messages in chronological order.
     pub async fn history(&self, chat_id: i64, limit: i32) -> Result<Vec<MessageInfo>> {
         let _ = self.open_chat(chat_id).await;
         // TDLib may answer from its database before the server page for a
@@ -413,12 +476,24 @@ impl TgClient {
         let enums::Message::Message(message) = message;
         Ok(map_message(message, "You".to_string()))
     }
+
+    pub async fn view_messages(&self, chat_id: i64, message_id: i64) -> Result<()> {
+        td(functions::view_messages(chat_id, vec![message_id], None, true, self.client_id).await)?;
+        Ok(())
+    }
 }
 
 fn map_message(message: types::Message, sender: String) -> MessageInfo {
-    let text = match message.content {
-        enums::MessageContent::MessageText(content) => content.text.text,
-        enums::MessageContent::MessagePhoto(content) => content.caption.text,
+    let kind = message_kind(&message.content);
+    let text = match &message.content {
+        enums::MessageContent::MessageText(content) => content.text.text.clone(),
+        enums::MessageContent::MessagePhoto(content) => content.caption.text.clone(),
+        enums::MessageContent::MessageVideo(content) => content.caption.text.clone(),
+        enums::MessageContent::MessageAnimation(content) => content.caption.text.clone(),
+        enums::MessageContent::MessageAudio(content) => content.caption.text.clone(),
+        enums::MessageContent::MessageVoiceNote(content) => content.caption.text.clone(),
+        enums::MessageContent::MessageDocument(content) => content.caption.text.clone(),
+        enums::MessageContent::MessagePoll(content) => content.poll.question.text.clone(),
         _ => String::new(),
     };
     MessageInfo {
@@ -428,7 +503,103 @@ fn map_message(message: types::Message, sender: String) -> MessageInfo {
         text,
         outgoing: message.is_outgoing,
         time: format_time(message.date),
+        kind,
+        edited: message.edit_date > 0,
     }
+}
+
+fn message_kind(content: &enums::MessageContent) -> MessageKind {
+    use enums::MessageContent as C;
+    match content {
+        C::MessageText(_) => MessageKind::Text,
+        C::MessagePhoto(_) => MessageKind::Photo,
+        C::MessageVideo(_) => MessageKind::Video,
+        C::MessageAnimation(_) => MessageKind::Animation,
+        C::MessageAudio(_) => MessageKind::Audio,
+        C::MessageVoiceNote(_) => MessageKind::Voice,
+        C::MessageSticker(_) => MessageKind::Sticker,
+        C::MessageDocument(_) => MessageKind::File,
+        C::MessagePoll(_) => MessageKind::Poll,
+        C::MessageLocation(_) => MessageKind::Location,
+        C::MessageContact(_) => MessageKind::Contact,
+        C::MessageBasicGroupChatCreate(_)
+        | C::MessageSupergroupChatCreate(_)
+        | C::MessageChatAddMembers(_)
+        | C::MessageChatChangeTitle(_)
+        | C::MessageChatChangePhoto(_)
+        | C::MessageChatDeleteMember(_)
+        | C::MessageChatDeletePhoto
+        | C::MessageChatJoinByLink
+        | C::MessageChatJoinByRequest
+        | C::MessageChatUpgradeFrom(_)
+        | C::MessageChatUpgradeTo(_)
+        | C::MessagePinMessage(_)
+        | C::MessageScreenshotTaken
+        | C::MessageChatSetBackground(_)
+        | C::MessageChatSetMessageAutoDeleteTime(_)
+        | C::MessageChatSetTheme(_)
+        | C::MessageChatBoost(_)
+        | C::MessageContactRegistered
+        | C::MessageCustomServiceAction(_)
+        | C::MessageForumTopicCreated(_)
+        | C::MessageForumTopicEdited(_)
+        | C::MessageForumTopicIsClosedToggled(_)
+        | C::MessageForumTopicIsHiddenToggled(_)
+        | C::MessageGameScore(_)
+        | C::MessageInviteVideoChatParticipants(_)
+        | C::MessageVideoChatEnded(_)
+        | C::MessageVideoChatScheduled(_)
+        | C::MessageVideoChatStarted(_) => MessageKind::Service,
+        _ => MessageKind::Other,
+    }
+}
+
+fn content_preview(content: &enums::MessageContent) -> String {
+    let kind = message_kind(content);
+    let label = match kind {
+        MessageKind::Text => return preview_text(&content_text(content)),
+        MessageKind::Photo => "photo",
+        MessageKind::Video => "video",
+        MessageKind::Animation => "GIF",
+        MessageKind::Audio => "audio",
+        MessageKind::Voice => "voice",
+        MessageKind::Sticker => "sticker",
+        MessageKind::File => "file",
+        MessageKind::Poll => "poll",
+        MessageKind::Location => "location",
+        MessageKind::Contact => "contact",
+        MessageKind::Service => "service",
+        MessageKind::Other => "message",
+    };
+    let caption = content_text(content);
+    let caption = preview_text(&caption);
+    if caption.is_empty() {
+        format!("[{label}]")
+    } else {
+        format!("[{label}] {caption}")
+    }
+}
+
+fn content_text(content: &enums::MessageContent) -> String {
+    use enums::MessageContent as C;
+    match content {
+        C::MessageText(text) => text.text.text.clone(),
+        C::MessagePhoto(photo) => photo.caption.text.clone(),
+        C::MessageVideo(video) => video.caption.text.clone(),
+        C::MessageAnimation(animation) => animation.caption.text.clone(),
+        C::MessageAudio(audio) => audio.caption.text.clone(),
+        C::MessageVoiceNote(voice) => voice.caption.text.clone(),
+        C::MessageDocument(document) => document.caption.text.clone(),
+        C::MessagePoll(poll) => poll.poll.question.text.clone(),
+        _ => String::new(),
+    }
+}
+
+fn preview_text(text: &str) -> String {
+    text.replace(['\n', '\t'], " ")
+        .chars()
+        .take(120)
+        .collect::<String>()
 }
 
 fn format_time(date: i32) -> String {

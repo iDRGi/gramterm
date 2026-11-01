@@ -845,7 +845,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
         }
         lines.push(Line::from(header));
 
-        for part in textwrap::wrap(&message.text, width) {
+        let body = if message.text.is_empty() {
+            message_kind_label(app.lang, message.kind)
+        } else {
+            message.text.as_str()
+        };
+        for part in textwrap::wrap(body, width) {
             lines.push(Line::from(Span::styled(format!("  {part}"), text_style)));
         }
         lines.push(Line::from(Span::styled(String::new(), text_style)));
@@ -881,6 +886,26 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
             Hit::Message(index),
         ));
     }
+}
+
+fn message_kind_label(lang: crate::i18n::Lang, kind: crate::backend::MessageKind) -> &'static str {
+    use crate::backend::MessageKind;
+    let key = match kind {
+        MessageKind::Text => "message_empty",
+        MessageKind::Photo => "message_photo",
+        MessageKind::Video => "message_video",
+        MessageKind::Animation => "message_animation",
+        MessageKind::Audio => "message_audio",
+        MessageKind::Voice => "message_voice",
+        MessageKind::Sticker => "message_sticker",
+        MessageKind::File => "message_file",
+        MessageKind::Poll => "message_poll",
+        MessageKind::Location => "message_location",
+        MessageKind::Contact => "message_contact",
+        MessageKind::Service => "message_service",
+        MessageKind::Other => "message_other",
+    };
+    i18n::t(lang, key)
 }
 
 fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect, theme: Theme) {
@@ -1062,7 +1087,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Backend, Chat, ChatId, Message};
+    use crate::backend::{Backend, Chat, ChatId, Message, MessageKind};
     use crate::i18n::Lang;
     use crate::theme::ThemeKind;
     use ratatui::Terminal;
@@ -1104,6 +1129,7 @@ mod tests {
                 text,
                 outgoing: true,
                 time: "now".into(),
+                kind: MessageKind::Text,
                 pending: false,
                 edited: false,
             }

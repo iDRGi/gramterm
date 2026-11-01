@@ -22,6 +22,24 @@ pub struct Chat {
     pub kind: ChatKind,
 }
 
+#[allow(dead_code)] // media/service variants come from the feature-gated TDLib backend
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Text,
+    Photo,
+    Video,
+    Animation,
+    Audio,
+    Voice,
+    Sticker,
+    File,
+    Poll,
+    Location,
+    Contact,
+    Service,
+    Other,
+}
+
 #[derive(Debug, Clone)]
 pub struct Message {
     /// Reserved for TDLib updates and deduplication.
@@ -34,6 +52,7 @@ pub struct Message {
     pub time: String,
     pub pending: bool,
     pub edited: bool,
+    pub kind: MessageKind,
 }
 
 /// A message that could not be sent. The backend keeps the text so the UI can

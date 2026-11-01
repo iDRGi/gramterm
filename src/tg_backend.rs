@@ -3,9 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-use gramterm_tg::{AuthState, ChatInfo, Config, MessageInfo, TgClient};
+use gramterm_tg::{
+    AuthState, ChatInfo, ChatInfoKind, Config, MessageInfo, MessageKind as TgMessageKind, TgClient,
+};
 
-use crate::backend::{AuthView, Backend, Chat, ChatId, ChatKind, Message, MsgId, SendFailure};
+use crate::backend::{
+    AuthView, Backend, Chat, ChatId, ChatKind, Message, MessageKind, MsgId, SendFailure,
+};
 use crate::message_cache;
 
 /// How many recent messages `open_chat` loads.
@@ -260,6 +264,7 @@ impl TgBackend {
                                                 text: info.text,
                                                 outgoing: info.outgoing,
                                                 time: info.time,
+                                                kind: MessageKind::Text,
                                                 pending: false,
                                                 edited: false,
                                             };
@@ -386,7 +391,35 @@ fn map_message_info(info: MessageInfo) -> Message {
         outgoing: info.outgoing,
         time: info.time,
         pending: false,
-        edited: false,
+        edited: info.edited,
+        kind: map_message_kind(info.kind),
+    }
+}
+
+fn map_chat_kind(kind: ChatInfoKind) -> ChatKind {
+    match kind {
+        ChatInfoKind::Saved => ChatKind::Saved,
+        ChatInfoKind::Private => ChatKind::Private,
+        ChatInfoKind::Group => ChatKind::Group,
+        ChatInfoKind::Channel => ChatKind::Channel,
+    }
+}
+
+fn map_message_kind(kind: TgMessageKind) -> MessageKind {
+    match kind {
+        TgMessageKind::Text => MessageKind::Text,
+        TgMessageKind::Photo => MessageKind::Photo,
+        TgMessageKind::Video => MessageKind::Video,
+        TgMessageKind::Animation => MessageKind::Animation,
+        TgMessageKind::Audio => MessageKind::Audio,
+        TgMessageKind::Voice => MessageKind::Voice,
+        TgMessageKind::Sticker => MessageKind::Sticker,
+        TgMessageKind::File => MessageKind::File,
+        TgMessageKind::Poll => MessageKind::Poll,
+        TgMessageKind::Location => MessageKind::Location,
+        TgMessageKind::Contact => MessageKind::Contact,
+        TgMessageKind::Service => MessageKind::Service,
+        TgMessageKind::Other => MessageKind::Other,
     }
 }
 
@@ -541,6 +574,7 @@ impl Backend for TgBackend {
             text: text.clone(),
             outgoing: true,
             time: "now".into(),
+            kind: MessageKind::Text,
             pending: true,
             edited: false,
         };
@@ -593,11 +627,11 @@ impl Backend for TgBackend {
                         .map(|chat| Chat {
                             id: chat.id,
                             title: chat.title,
-                            preview: String::new(),
-                            unread: 0,
-                            muted: false,
-                            pinned: false,
-                            kind: ChatKind::Private,
+                            preview: chat.preview,
+                            unread: chat.unread,
+                            muted: chat.muted,
+                            pinned: chat.pinned,
+                            kind: map_chat_kind(chat.kind),
                         })
                         .collect();
                     for chat in &mut next {
@@ -694,6 +728,8 @@ mod tests {
             text: text.into(),
             outgoing: false,
             time: "12:00".into(),
+            kind: TgMessageKind::Text,
+            edited: false,
         }
     }
 
@@ -705,6 +741,7 @@ mod tests {
             text: text.into(),
             outgoing: true,
             time: "now".into(),
+            kind: MessageKind::Text,
             pending,
             edited: false,
         }
