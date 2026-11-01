@@ -329,9 +329,15 @@ impl App {
 
     pub fn on_tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        let old_message_count = self.current_messages().len();
         let auth_before = self.backend.auth();
         if let Some(message) = self.backend.tick() {
-            if self.current_chat_id() == Some(message.chat_id) && self.follow_bottom {
+            let same_chat = self.current_chat_id() == Some(message.chat_id);
+            let was_at_bottom = self.follow_bottom
+                || self.selected_message.is_none()
+                || self.selected_message == old_message_count.checked_sub(1);
+            if same_chat && was_at_bottom {
+                self.follow_bottom = true;
                 self.selected_message = self.current_messages().len().checked_sub(1);
             }
             self.status = format!("new: {}", message.sender);
